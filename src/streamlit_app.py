@@ -1,4 +1,4 @@
-# ===== Hugging Face / Streamlit SAFE HEADERS =====
+# ================= HF + STREAMLIT SAFE SETUP =================
 import os
 os.environ["TRANSFORMERS_CACHE"] = "/tmp"
 os.environ["HF_HOME"] = "/tmp"
@@ -10,16 +10,17 @@ import sqlite3
 import datetime
 import difflib
 import random
+import numpy as np
 import soundfile as sf
 
-# ---------------- CONFIG ----------------
+# ================= CONFIG =================
 st.set_page_config(
     page_title="NeuroSpeech Pro",
     page_icon="🩺",
     layout="centered"
 )
 
-# ---------------- DATABASE ----------------
+# ================= DATABASE =================
 DB_PATH = "patient_history.db"
 
 def init_db():
@@ -39,20 +40,20 @@ def init_db():
 
 init_db()
 
-# ---------------- LOAD WHISPER (LOW RAM) ----------------
+# ================= LOAD WHISPER (LOW RAM, NO GPU) =================
 @st.cache_resource
 def load_whisper_model():
     return whisper.load_model(
-        "tiny",      # 🔥 REQUIRED for HF free tier
+        "tiny",        # 🔥 REQUIRED for HF free tier
         device="cpu"
     )
 
 model = load_whisper_model()
 
-# ---------------- ANALYSIS ----------------
+# ================= ANALYSIS =================
 def analyze_speech(target, spoken):
-    t_ipa = ipa.convert(target)
-    s_ipa = ipa.convert(spoken)
+    target_ipa = ipa.convert(target)
+    spoken_ipa = ipa.convert(spoken)
 
     accuracy = round(
         difflib.SequenceMatcher(
@@ -61,7 +62,11 @@ def analyze_speech(target, spoken):
         1
     )
 
-    feedback = f"Target IPA: /{t_ipa}/\nSpoken IPA: /{s_ipa}/"
+    feedback = (
+        f"Target IPA: /{target_ipa}/\n"
+        f"Spoken IPA: /{spoken_ipa}/"
+    )
+
     return accuracy, feedback
 
 def save_session(target, spoken, accuracy, feedback):
@@ -85,7 +90,7 @@ def get_history():
     conn.close()
     return rows
 
-# ---------------- UI ----------------
+# ================= UI =================
 st.title("🩺 NeuroSpeech Pro")
 st.markdown("### Clinical Speech Therapy Assistant")
 
@@ -127,55 +132,64 @@ st.markdown(f"### 🎯 Target: **{st.session_state.current_target}**")
 st.caption(f"IPA: /{ipa.convert(st.session_state.current_target)}/")
 st.markdown("---")
 
-# ---------------- AUDIO INPUT ----------------
-audio = st.audio_input("🎙️ Record your voice (max 10 sec)")
+# ================= AUDIO INPUT =================
+audio = st.audio_input("🎙️ Record your voice (max 10 seconds)")
 
 if audio is not None:
+    # Save audio
     with open("temp.wav", "wb") as f:
         f.write(audio.read())
 
-    # ---- duration guard (HF safety) ----
-    data, samplerate = sf.read("temp.wav")
-    duration = len(data) / samplerate
+    # Load audio manually (NO ffmpeg)
+    audio_data, sample_rate = sf.read("temp.wav")
 
+    # Stereo → mono
+    if len(audio_data.shape) > 1:
+        audio_data = np.mean(audio_data, axis=1)
+
+    # Duration check
+    duration = len(audio_data) / sample_rate
     if duration > 10:
-        st.error("❌ Audio too long. Please record under 10 seconds.")
+        st.error("❌ Audio too long. Please record less than 10 seconds.")
         st.stop()
 
+    # Transcribe WITHOUT ffmpeg
     with st.spinner("🧠 Analyzing speech..."):
         result = model.transcribe(
-            "temp.wav",
+            audio_data,
             fp16=False,
             language="en"
         )
         spoken_text = result["text"].strip()
 
-    acc, fb = analyze_speech(
+    # Analyze
+    accuracy, feedback = analyze_speech(
         st.session_state.current_target,
         spoken_text
     )
 
+    # Display
     st.subheader(f'You said: "{spoken_text}"')
-    st.metric("Accuracy", f"{acc}%")
+    st.metric("Accuracy", f"{accuracy}%")
 
-    if acc > 85:
+    if accuracy > 85:
         st.success("Excellent articulation!")
-    elif acc > 60:
+    elif accuracy > 60:
         st.warning("Good effort — refine pronunciation.")
     else:
         st.error("Try again — focus on clarity.")
 
     with st.expander("Phonetic Feedback"):
-        st.text(fb)
+        st.text(feedback)
 
     save_session(
         st.session_state.current_target,
         spoken_text,
-        acc,
-        fb
+        accuracy,
+        feedback
     )
 
-# ---------------- HISTORY ----------------
+# ================= HISTORY =================
 st.markdown("---")
 if st.checkbox("Show Progress History"):
     history = get_history()
