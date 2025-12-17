@@ -141,11 +141,12 @@ if audio is not None:
         f.write(audio.read())
 
     # Load audio manually (NO ffmpeg)
-    audio_data, sample_rate = sf.read("temp.wav")
+    audio_data, sample_rate = sf.read("temp.wav", dtype="float32")
 
     # Stereo → mono
     if len(audio_data.shape) > 1:
-        audio_data = np.mean(audio_data, axis=1)
+        audio_data = np.mean(audio_data, axis=1).astype(np.float32)
+
 
     # Duration check
     duration = len(audio_data) / sample_rate
