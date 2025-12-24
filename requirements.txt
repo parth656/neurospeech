@@ -1,5 +1,5 @@
 streamlit
-git+https://github.com/openai/whisper.git
-eng_to_ipa
-soundfile
+openai-whisper
+eng-to-ipa
 numpy
+soundfile
