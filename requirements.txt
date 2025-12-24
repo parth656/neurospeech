@@ -1,8 +1,7 @@
-# Compatible with Python 3.11
-streamlit==1.28.0
-openai-whisper==20231117
-eng-to-ipa==0.0.2
-numpy==1.24.3
-soundfile==0.12.1
-torch==2.1.0
-torchaudio==2.1.0
+streamlit
+openai-whisper
+eng-to-ipa
+numpy
+soundfile
+torch
+torchaudio
