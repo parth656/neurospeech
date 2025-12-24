@@ -1,13 +1,8 @@
-# Core dependencies with version pinning for stability
-streamlit==1.32.0
+# Compatible with Python 3.11
+streamlit==1.28.0
 openai-whisper==20231117
 eng-to-ipa==0.0.2
 numpy==1.24.3
 soundfile==0.12.1
-
-# Whisper dependencies (explicit for better control)
-torch==2.0.1
-torchaudio==2.0.2
-
-# Additional audio processing (if needed)
-librosa==0.10.1
+torch==2.1.0
+torchaudio==2.1.0
