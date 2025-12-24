@@ -13,6 +13,8 @@ import random
 import numpy as np
 import soundfile as sf
 import time
+from pathlib import Path
+import tempfile
 
 # ================= CONFIG =================
 st.set_page_config(
@@ -22,34 +24,52 @@ st.set_page_config(
 )
 
 # ================= DATABASE =================
-# Use persistent storage directory if available (Hugging Face Spaces)
-PERSISTENT_DIR = os.getenv("HF_HOME", "/tmp")
+# Use proper persistent storage for Hugging Face Spaces
+PERSISTENT_DIR = os.getenv("PERSISTENT_STORAGE_PATH", "./data")
+Path(PERSISTENT_DIR).mkdir(parents=True, exist_ok=True)
 DB_PATH = os.path.join(PERSISTENT_DIR, "patient_history.db")
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            timestamp TEXT,
-            category TEXT,
-            target TEXT,
-            spoken TEXT,
-            accuracy REAL,
-            speech_rate REAL,
-            pause_count INTEGER,
-            feedback TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Initialize database with proper error handling"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                category TEXT NOT NULL,
+                target TEXT NOT NULL,
+                spoken TEXT NOT NULL,
+                accuracy REAL NOT NULL,
+                speech_rate REAL NOT NULL,
+                pause_count INTEGER,
+                feedback TEXT,
+                audio_duration REAL
+            )
+        """)
+        # Add index for faster queries
+        c.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON sessions(timestamp DESC)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_category ON sessions(category)")
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Database initialization failed: {e}")
+        return False
 
 init_db()
 
 # ================= LOAD WHISPER =================
 @st.cache_resource
 def load_whisper_model():
-    return whisper.load_model("tiny", device="cpu")
+    """Load Whisper model with error handling"""
+    try:
+        # Use 'base' for better accuracy while maintaining reasonable speed
+        return whisper.load_model("base", device="cpu")
+    except Exception as e:
+        st.error(f"Failed to load Whisper model: {e}")
+        return None
 
 model = load_whisper_model()
 
@@ -202,94 +222,130 @@ therapy_modules = {
 
 # ================= SPEECH ANALYSIS =================
 def analyze_speech_advanced(target, spoken, audio_duration):
-    """Advanced analysis for cluttering and articulation"""
+    """Advanced analysis with robust error handling"""
+    try:
+        target_clean = target.lower().replace("...", "").strip()
+        spoken_clean = spoken.lower().strip()
+        
+        # Validate inputs
+        if not target_clean or not spoken_clean:
+            return 0.0, 0.0, 0, "Invalid input - empty text"
+        
+        if audio_duration <= 0:
+            return 0.0, 0.0, 0, "Invalid audio duration"
+        
+        # Accuracy
+        accuracy = round(
+            difflib.SequenceMatcher(None, target_clean, spoken_clean).ratio() * 100,
+            1
+        )
+        
+        # Speech rate (words per minute)
+        word_count = len(spoken.split())
+        speech_rate = round((word_count / audio_duration) * 60, 1)
+        
+        # Estimate pause count
+        pause_count = spoken.count('.') + spoken.count(',') + spoken.count('...')
+        
+        # IPA comparison with error handling
+        try:
+            target_ipa = ipa.convert(target_clean)
+            spoken_ipa = ipa.convert(spoken_clean)
+        except Exception:
+            target_ipa = "N/A"
+            spoken_ipa = "N/A"
+        
+        # Detailed feedback
+        feedback_parts = []
+        feedback_parts.append(f"Target IPA: /{target_ipa}/")
+        feedback_parts.append(f"Spoken IPA: /{spoken_ipa}/")
+        feedback_parts.append(f"\nSpeech Rate: {speech_rate} words/minute")
+        
+        # Rate guidance
+        if speech_rate > 200:
+            feedback_parts.append("⚠️ Speaking too fast - try slowing down")
+        elif speech_rate < 100:
+            feedback_parts.append("✓ Good controlled pace")
+        elif speech_rate < 150:
+            feedback_parts.append("✓ Excellent moderate pace")
+        
+        # Word-by-word comparison
+        target_words = target_clean.split()
+        spoken_words = spoken_clean.split()
+        
+        if len(target_words) > 0 and len(spoken_words) > 0:
+            feedback_parts.append("\n--- Word Analysis ---")
+            max_len = max(len(target_words), len(spoken_words))
+            for i in range(min(max_len, 20)):  # Limit to 20 words to prevent overflow
+                t_word = target_words[i] if i < len(target_words) else "[missing]"
+                s_word = spoken_words[i] if i < len(spoken_words) else "[extra]"
+                
+                if t_word.lower() == s_word.lower():
+                    feedback_parts.append(f"✓ {t_word}")
+                else:
+                    feedback_parts.append(f"✗ Expected: {t_word} | Said: {s_word}")
+        
+        return accuracy, speech_rate, pause_count, "\n".join(feedback_parts)
     
-    target_clean = target.lower().replace("...", "").strip()
-    spoken_clean = spoken.lower().strip()
-    
-    # Accuracy
-    accuracy = round(
-        difflib.SequenceMatcher(None, target_clean, spoken_clean).ratio() * 100,
-        1
-    )
-    
-    # Speech rate (words per minute)
-    word_count = len(spoken.split())
-    speech_rate = round((word_count / audio_duration) * 60, 1) if audio_duration > 0 else 0
-    
-    # Estimate pause count (very rough - based on sentence structure)
-    pause_count = spoken.count('.') + spoken.count(',') + spoken.count('...')
-    
-    # IPA comparison
-    target_ipa = ipa.convert(target_clean)
-    spoken_ipa = ipa.convert(spoken_clean)
-    
-    # Detailed feedback
-    feedback_parts = []
-    feedback_parts.append(f"Target IPA: /{target_ipa}/")
-    feedback_parts.append(f"Spoken IPA: /{spoken_ipa}/")
-    feedback_parts.append(f"\nSpeech Rate: {speech_rate} words/minute")
-    
-    # Rate guidance
-    if speech_rate > 200:
-        feedback_parts.append("⚠️ Speaking too fast - try slowing down")
-    elif speech_rate < 100:
-        feedback_parts.append("✓ Good controlled pace")
-    elif speech_rate < 150:
-        feedback_parts.append("✓ Excellent moderate pace")
-    
-    # Word-by-word comparison
-    target_words = target_clean.split()
-    spoken_words = spoken_clean.split()
-    
-    if len(target_words) > 0 and len(spoken_words) > 0:
-        feedback_parts.append("\n--- Word Analysis ---")
-        max_len = max(len(target_words), len(spoken_words))
-        for i in range(max_len):
-            t_word = target_words[i] if i < len(target_words) else "[missing]"
-            s_word = spoken_words[i] if i < len(spoken_words) else "[extra]"
-            
-            if t_word.lower() == s_word.lower():
-                feedback_parts.append(f"✓ {t_word}")
-            else:
-                feedback_parts.append(f"✗ Expected: {t_word} | Said: {s_word}")
-    
-    return accuracy, speech_rate, pause_count, "\n".join(feedback_parts)
+    except Exception as e:
+        return 0.0, 0.0, 0, f"Analysis error: {str(e)}"
 
-def save_session(category, target, spoken, accuracy, speech_rate, pause_count, feedback):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    c.execute(
-        "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (ts, category, target, spoken, accuracy, speech_rate, pause_count, feedback)
-    )
-    conn.commit()
-    conn.close()
+def save_session(category, target, spoken, accuracy, speech_rate, pause_count, feedback, duration):
+    """Save session with error handling"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        c.execute(
+            "INSERT INTO sessions (timestamp, category, target, spoken, accuracy, speech_rate, pause_count, feedback, audio_duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ts, category, target, spoken, accuracy, speech_rate, pause_count, feedback, duration)
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save session: {e}")
+        return False
 
-def get_history():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        "SELECT timestamp, category, accuracy, speech_rate FROM sessions ORDER BY rowid DESC LIMIT 20"
-    )
-    rows = c.fetchall()
-    conn.close()
-    return rows
+def get_history(limit=20):
+    """Get session history with error handling"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "SELECT timestamp, category, accuracy, speech_rate FROM sessions ORDER BY timestamp DESC LIMIT ?",
+            (limit,)
+        )
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        st.error(f"Failed to fetch history: {e}")
+        return []
 
 def get_category_stats():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute(
-        "SELECT category, AVG(accuracy) as avg_acc, COUNT(*) as count FROM sessions GROUP BY category"
-    )
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    """Get category statistics with error handling"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute(
+            "SELECT category, AVG(accuracy) as avg_acc, COUNT(*) as count FROM sessions GROUP BY category ORDER BY count DESC"
+        )
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        st.error(f"Failed to fetch stats: {e}")
+        return []
 
 # ================= UI =================
 st.title("🩺 NeuroSpeech Therapy Pro")
 st.markdown("### Comprehensive Speech Therapy for Cluttering & Articulation")
+
+# Check if model loaded successfully
+if model is None:
+    st.error("❌ Failed to load speech recognition model. Please refresh the page.")
+    st.stop()
 
 # Sidebar
 with st.sidebar:
@@ -310,13 +366,16 @@ with st.sidebar:
     
     # Database backup/restore
     if os.path.exists(DB_PATH):
-        with open(DB_PATH, "rb") as f:
-            st.download_button(
-                "💾 Download Progress",
-                f,
-                file_name="my_speech_progress.db",
-                help="Save your therapy history"
-            )
+        try:
+            with open(DB_PATH, "rb") as f:
+                st.download_button(
+                    "💾 Download Progress",
+                    f,
+                    file_name="my_speech_progress.db",
+                    help="Save your therapy history"
+                )
+        except Exception as e:
+            st.warning(f"Cannot download database: {e}")
     
     uploaded_db = st.file_uploader(
         "📂 Restore Progress",
@@ -324,15 +383,19 @@ with st.sidebar:
         help="Upload previously saved database"
     )
     if uploaded_db:
-        with open(DB_PATH, "wb") as f:
-            f.write(uploaded_db.read())
-        st.success("✅ Progress restored!")
-        st.rerun()
+        try:
+            with open(DB_PATH, "wb") as f:
+                f.write(uploaded_db.read())
+            st.success("✅ Progress restored!")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to restore database: {e}")
     
     stats = get_category_stats()
     if stats:
-        for cat, avg_acc, count in stats:
-            st.metric(cat.split(" ")[-1][:15], f"{avg_acc:.1f}%", f"{count} sessions")
+        for cat, avg_acc, count in stats[:5]:  # Show top 5
+            short_name = cat.split(" ")[-1][:15] if " " in cat else cat[:15]
+            st.metric(short_name, f"{avg_acc:.1f}%", f"{count} sessions")
     else:
         st.info("Start practicing to see stats")
 
@@ -340,7 +403,8 @@ with st.sidebar:
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    if "current_target" not in st.session_state:
+    # Initialize session state properly
+    if "current_target" not in st.session_state or "category" not in st.session_state:
         st.session_state.current_target = random.choice(therapy_modules[category]["exercises"])
         st.session_state.category = category
 
@@ -355,71 +419,99 @@ with col1:
     st.markdown("---")
     st.markdown(f"### 🎯 Target Phrase:")
     st.markdown(f"# {st.session_state.current_target}")
-    st.caption(f"IPA: /{ipa.convert(st.session_state.current_target)}/")
+    
+    try:
+        ipa_text = ipa.convert(st.session_state.current_target)
+        st.caption(f"IPA: /{ipa_text}/")
+    except Exception:
+        st.caption("IPA conversion unavailable")
+    
     st.markdown("---")
 
-    # Audio input
-    audio = st.audio_input("🎙️ Record your voice (max 10 seconds)")
+    # Audio input with instructions
+    st.markdown("**Instructions:** Click the microphone button below and speak the target phrase clearly.")
+    audio = st.audio_input("🎙️ Record your voice")
 
     if audio is not None:
         start_time = time.time()
         
-        with open("temp.wav", "wb") as f:
-            f.write(audio.read())
-
-        audio_data, sample_rate = sf.read("temp.wav", dtype="float32")
-
-        if len(audio_data.shape) > 1:
-            audio_data = np.mean(audio_data, axis=1).astype(np.float32)
-
-        duration = len(audio_data) / sample_rate
+        # Use tempfile for better cleanup
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            tmp_path = tmp_file.name
+            tmp_file.write(audio.read())
         
-        if duration > 10:
-            st.error("❌ Audio too long. Please record less than 10 seconds.")
-            st.stop()
+        try:
+            # Read audio file
+            audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
 
-        with st.spinner("🧠 Analyzing your speech..."):
-            result = model.transcribe(audio_data, fp16=False, language="en")
-            spoken_text = result["text"].strip()
+            # Convert to mono if stereo
+            if len(audio_data.shape) > 1:
+                audio_data = np.mean(audio_data, axis=1).astype(np.float32)
 
-        accuracy, speech_rate, pause_count, feedback = analyze_speech_advanced(
-            st.session_state.current_target,
-            spoken_text,
-            duration
-        )
+            duration = len(audio_data) / sample_rate
+            
+            # Validation
+            if duration > 30:
+                st.error("❌ Audio too long. Please record less than 30 seconds.")
+            elif duration < 0.5:
+                st.error("❌ Audio too short. Please speak the full phrase.")
+            else:
+                with st.spinner("🧠 Analyzing your speech..."):
+                    result = model.transcribe(audio_data, fp16=False, language="en")
+                    spoken_text = result["text"].strip()
 
-        st.markdown("### 📝 You said:")
-        st.info(f'"{spoken_text}"')
+                if not spoken_text:
+                    st.error("❌ No speech detected. Please try again and speak clearly.")
+                else:
+                    accuracy, speech_rate, pause_count, feedback = analyze_speech_advanced(
+                        st.session_state.current_target,
+                        spoken_text,
+                        duration
+                    )
 
-        col_a, col_b, col_c = st.columns(3)
-        with col_a:
-            st.metric("Accuracy", f"{accuracy}%")
-        with col_b:
-            st.metric("Speech Rate", f"{speech_rate} wpm")
-        with col_c:
-            st.metric("Duration", f"{duration:.1f}s")
+                    st.markdown("### 📝 You said:")
+                    st.info(f'"{spoken_text}"')
 
-        if accuracy >= 85:
-            st.success("🎉 Excellent! Your articulation is clear and accurate.")
-        elif accuracy >= 70:
-            st.warning("👍 Good effort! Review the feedback below for improvement.")
-        elif accuracy >= 50:
-            st.warning("💪 Keep practicing! Focus on the tips provided.")
-        else:
-            st.error("🔄 Try again - slow down and focus on each sound.")
+                    col_a, col_b, col_c = st.columns(3)
+                    with col_a:
+                        st.metric("Accuracy", f"{accuracy}%")
+                    with col_b:
+                        st.metric("Speech Rate", f"{speech_rate} wpm")
+                    with col_c:
+                        st.metric("Duration", f"{duration:.1f}s")
 
-        with st.expander("📋 Detailed Phonetic Feedback"):
-            st.text(feedback)
+                    if accuracy >= 85:
+                        st.success("🎉 Excellent! Your articulation is clear and accurate.")
+                    elif accuracy >= 70:
+                        st.warning("👍 Good effort! Review the feedback below for improvement.")
+                    elif accuracy >= 50:
+                        st.warning("💪 Keep practicing! Focus on the tips provided.")
+                    else:
+                        st.error("🔄 Try again - slow down and focus on each sound.")
 
-        save_session(
-            category,
-            st.session_state.current_target,
-            spoken_text,
-            accuracy,
-            speech_rate,
-            pause_count,
-            feedback
-        )
+                    with st.expander("📋 Detailed Phonetic Feedback"):
+                        st.text(feedback)
+
+                    save_session(
+                        category,
+                        st.session_state.current_target,
+                        spoken_text,
+                        accuracy,
+                        speech_rate,
+                        pause_count,
+                        feedback,
+                        duration
+                    )
+        
+        except Exception as e:
+            st.error(f"❌ Error processing audio: {str(e)}")
+        
+        finally:
+            # Cleanup temp file
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 with col2:
     st.markdown("### 💡 Quick Tips")
@@ -454,7 +546,8 @@ if st.checkbox("Show Detailed History"):
         for ts, cat, acc, rate in history:
             col_x, col_y, col_z = st.columns([3, 2, 2])
             with col_x:
-                st.text(f"{ts} - {cat.split(' ')[-1][:20]}")
+                short_cat = cat.split(' ')[-1][:20] if ' ' in cat else cat[:20]
+                st.text(f"{ts} - {short_cat}")
             with col_y:
                 st.text(f"Accuracy: {acc:.1f}%")
             with col_z:
@@ -463,7 +556,8 @@ if st.checkbox("Show Detailed History"):
         st.markdown("---")
         st.markdown("**Accuracy Trend:**")
         scores = [h[2] for h in history][::-1]
-        st.line_chart(scores)
+        if scores:
+            st.line_chart(scores)
         
         st.markdown("**Speech Rate Trend:**")
         rates = [h[3] for h in history if h[3] > 0][::-1]
@@ -474,3 +568,4 @@ if st.checkbox("Show Detailed History"):
 
 st.markdown("---")
 st.caption("💙 Practice daily for best results. Track progress over weeks.")
+st.caption("⚠️ This app uses AI for analysis. Always consult a licensed speech therapist for professional advice.")
