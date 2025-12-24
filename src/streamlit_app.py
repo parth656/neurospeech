@@ -22,7 +22,9 @@ st.set_page_config(
 )
 
 # ================= DATABASE =================
-DB_PATH = "patient_history.db"
+# Use persistent storage directory if available (Hugging Face Spaces)
+PERSISTENT_DIR = os.getenv("HF_HOME", "/tmp")
+DB_PATH = os.path.join(PERSISTENT_DIR, "patient_history.db")
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -305,6 +307,27 @@ with st.sidebar:
     
     st.markdown("---")
     st.subheader("📊 Your Progress")
+    
+    # Database backup/restore
+    if os.path.exists(DB_PATH):
+        with open(DB_PATH, "rb") as f:
+            st.download_button(
+                "💾 Download Progress",
+                f,
+                file_name="my_speech_progress.db",
+                help="Save your therapy history"
+            )
+    
+    uploaded_db = st.file_uploader(
+        "📂 Restore Progress",
+        type=["db"],
+        help="Upload previously saved database"
+    )
+    if uploaded_db:
+        with open(DB_PATH, "wb") as f:
+            f.write(uploaded_db.read())
+        st.success("✅ Progress restored!")
+        st.rerun()
     
     stats = get_category_stats()
     if stats:
