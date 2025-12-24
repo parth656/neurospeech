@@ -122,8 +122,6 @@ neurospeech/
 ├── packages.txt             # System dependencies (for Streamlit Cloud)
 ├── README.md                # This file
 ├── .gitignore              # Git ignore rules
-└── data/                   # Database storage (auto-created)
-    └── patient_history.db  # SQLite database
 ```
 
 ## 💡 Usage
