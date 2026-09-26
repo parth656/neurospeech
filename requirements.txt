@@ -1,7 +1,6 @@
-streamlit
-openai-whisper
-eng-to-ipa
-numpy
-soundfile
-torch
-torchaudio
+streamlit>=1.48,<2
+openai-whisper==20250625
+eng-to-ipa==0.0.2
+numpy>=1.26,<3
+soundfile>=0.12,<1
+torch>=2.2,<3
