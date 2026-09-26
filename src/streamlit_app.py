@@ -1,5 +1,6 @@
 # ================= HF + STREAMLIT SAFE SETUP =================
 import os
+import hashlib
 from pathlib import Path
 
 # Keep model/cache data out of the source tree. A persistent HF Space can set
@@ -548,15 +549,20 @@ with col1:
 
     # Audio input with instructions
     st.markdown("**Instructions:** Click the microphone button below and speak the target phrase clearly.")
-    audio = st.audio_input("🎙️ Record your voice")
+    audio = st.audio_input("🎙️ Record your voice", sample_rate=16000)
 
     if audio is not None:
-        start_time = time.time()
-        
+        audio_bytes = audio.getvalue()
+        audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+        if st.session_state.get("last_audio_hash") == audio_hash:
+            st.info("This recording has already been analyzed. Record a new sample to analyze again.")
+            audio = None
+
+    if audio is not None:
         # Use tempfile for better cleanup
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
             tmp_path = tmp_file.name
-            tmp_file.write(audio.read())
+            tmp_file.write(audio_bytes)
         
         try:
             # Read audio file
@@ -567,7 +573,6 @@ with col1:
                 audio_data = np.mean(audio_data, axis=1).astype(np.float32)
 
             duration = len(audio_data) / sample_rate
-            peak = float(np.max(np.abs(audio_data))) if audio_data.size else 0.0
             if not np.isfinite(audio_data).all():
                 raise ValueError("Audio contains invalid numeric samples.")
             if sample_rate <= 0 or audio_data.size == 0:
@@ -646,6 +651,7 @@ with col1:
                         feedback,
                         duration
                     )
+                    st.session_state.last_audio_hash = audio_hash
         
         except Exception as e:
             st.error(f"❌ Error processing audio: {str(e)}")
