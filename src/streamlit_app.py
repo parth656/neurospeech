@@ -38,7 +38,7 @@ DB_PATH = os.path.join(PERSISTENT_DIR, "patient_history.db")
 def init_db():
     """Initialize database with proper error handling"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = sqlite3.connect(DB_PATH, timeout=10)
         c = conn.cursor()
         c.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -83,7 +83,7 @@ def load_whisper_model():
         st.error(f"Failed to load Whisper model: {e}")
         return None
 
-model = load_whisper_model()
+model = None
 
 # ================= COMPREHENSIVE THERAPY PHRASES =================
 therapy_modules = {
@@ -233,87 +233,167 @@ therapy_modules = {
 }
 
 # ================= SPEECH ANALYSIS =================
-def analyze_speech_advanced(target, spoken, audio_duration):
-    """Advanced analysis with robust error handling"""
+def normalize_text(text):
+    """Normalize ASR text for comparison."""
+    return re.sub(r"[^a-z0-9']+", " ", str(text).lower()).strip()
+
+
+def rms_db(audio):
+    """Return RMS loudness in dBFS."""
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.size == 0:
+        return -100.0
+    rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
+    return round(20 * np.log10(max(rms, 1e-7)), 1)
+
+
+def estimate_silence(audio, sample_rate, threshold_db=-42.0):
+    """Estimate silence from waveform energy; this is not a clinical pause measure."""
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.size == 0 or sample_rate <= 0:
+        return 0.0, 0
+    frame = max(int(sample_rate * 0.02), 1)
+    usable = len(audio) - (len(audio) % frame)
+    if usable <= 0:
+        return 0.0, 0
+    frames = audio[:usable].reshape(-1, frame)
+    rms = np.sqrt(np.mean(frames * frames, axis=1))
+    db = 20 * np.log10(np.maximum(rms, 1e-7))
+    silent = db < threshold_db
+    ratio = float(np.mean(silent))
+    transitions = np.diff(np.r_[False, silent, False].astype(np.int8))
+    runs = np.where(transitions == 1)[0]
+    ends = np.where(transitions == -1)[0]
+    pauses = int(sum((e - s) * frame / sample_rate >= 0.20 for s, e in zip(runs, ends)))
+    return round(ratio * 100, 1), pauses
+
+
+def compare_words(target_words, spoken_words):
+    """Produce readable word-level alignment using SequenceMatcher opcodes."""
+    matcher = difflib.SequenceMatcher(None, target_words, spoken_words)
+    rows = []
+    correct = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            correct += i2 - i1
+            for word in target_words[i1:i2]:
+                rows.append(("✓", word, word))
+        elif tag == "replace":
+            n = max(i2 - i1, j2 - j1)
+            for k in range(n):
+                expected = target_words[i1 + k] if i1 + k < i2 else "[missing]"
+                said = spoken_words[j1 + k] if j1 + k < j2 else "[missing]"
+                rows.append(("✗", expected, said))
+        elif tag == "delete":
+            for word in target_words[i1:i2]:
+                rows.append(("✗", word, "[missing]"))
+        elif tag == "insert":
+            for word in spoken_words[j1:j2]:
+                rows.append(("+", "[extra]", word))
+    return rows, correct
+
+
+def analyze_speech_advanced(target, spoken, audio_duration, audio_data=None, sample_rate=0):
+    """Analyze transcript and basic acoustic measures for practice feedback.
+
+    These metrics are proxies for practice and should not be interpreted as
+    diagnosis or a clinical articulation score.
+    """
     try:
-        target_clean = re.sub(r"[^a-z0-9']+", " ", target.lower()).strip()
-        spoken_clean = re.sub(r"[^a-z0-9']+", " ", spoken.lower()).strip()
-        
-        # Validate inputs
+        target_clean = normalize_text(target)
+        spoken_clean = normalize_text(spoken)
+
         if not target_clean or not spoken_clean:
-            return 0.0, 0.0, 0, "Invalid input - empty text"
-        
+            return {
+                "match": 0.0, "wpm": 0.0, "pause_count": 0,
+                "silence_pct": 0.0, "loudness_db": -100.0,
+                "word_rows": [], "feedback": "No usable speech transcript was detected."
+            }
+
         if audio_duration <= 0:
-            return 0.0, 0.0, 0, "Invalid audio duration"
-        
-        # Accuracy
+            return {
+                "match": 0.0, "wpm": 0.0, "pause_count": 0,
+                "silence_pct": 0.0, "loudness_db": -100.0,
+                "word_rows": [], "feedback": "Invalid audio duration."
+            }
+
         target_words = target_clean.split()
         spoken_words = spoken_clean.split()
+        word_rows, correct_words = compare_words(target_words, spoken_words)
 
-        # Transcript similarity is a proxy for practice feedback; it is not a
-        # clinical articulation score.
-        word_ratio = difflib.SequenceMatcher(
-            None, target_words, spoken_words
-        ).ratio()
-        char_ratio = difflib.SequenceMatcher(
-            None, target_clean, spoken_clean
-        ).ratio()
-        accuracy = round((0.75 * word_ratio + 0.25 * char_ratio) * 100, 1)
-        
-        # Speech rate (words per minute)
-        word_count = len(spoken.split())
-        speech_rate = round((word_count / audio_duration) * 60, 1)
-        
-        # Estimate pause count
-        # Punctuation generated by ASR is only a rough proxy for pauses.
-        pause_count = sum(1 for mark in re.finditer(r"[,.!?]+", spoken))
-        
-        # IPA comparison with error handling
+        word_ratio = difflib.SequenceMatcher(None, target_words, spoken_words).ratio()
+        char_ratio = difflib.SequenceMatcher(None, target_clean, spoken_clean).ratio()
+        transcript_match = round((0.75 * word_ratio + 0.25 * char_ratio) * 100, 1)
+
+        word_count = len(spoken_words)
+        wpm = round((word_count / audio_duration) * 60, 1)
+
+        silence_pct, waveform_pauses = (
+            estimate_silence(audio_data, sample_rate)
+            if audio_data is not None and sample_rate
+            else (0.0, 0)
+        )
+        loudness = rms_db(audio_data) if audio_data is not None else -100.0
+
         try:
             target_ipa = ipa.convert(target_clean)
             spoken_ipa = ipa.convert(spoken_clean)
         except Exception:
-            target_ipa = "N/A"
-            spoken_ipa = "N/A"
-        
-        # Detailed feedback
-        feedback_parts = []
-        feedback_parts.append(f"Target IPA: /{target_ipa}/")
-        feedback_parts.append(f"Spoken IPA: /{spoken_ipa}/")
-        feedback_parts.append(f"\nSpeech Rate: {speech_rate} words/minute")
-        
-        # Rate guidance
-        if speech_rate > 200:
-            feedback_parts.append("⚠️ Speaking too fast - try slowing down")
-        elif speech_rate < 100:
-            feedback_parts.append("✓ Good controlled pace")
-        elif speech_rate < 150:
-            feedback_parts.append("✓ Excellent moderate pace")
-        
-        # Word-by-word comparison
-        if len(target_words) > 0 and len(spoken_words) > 0:
-            feedback_parts.append("\n--- Word Analysis ---")
-            max_len = max(len(target_words), len(spoken_words))
-            for i in range(min(max_len, 20)):  # Limit to 20 words to prevent overflow
-                t_word = target_words[i] if i < len(target_words) else "[missing]"
-                s_word = spoken_words[i] if i < len(spoken_words) else "[extra]"
-                
-                if t_word.lower() == s_word.lower():
-                    feedback_parts.append(f"✓ {t_word}")
-                else:
-                    feedback_parts.append(f"✗ Expected: {t_word} | Said: {s_word}")
-        
-        return accuracy, speech_rate, pause_count, "\n".join(feedback_parts)
-    
-    except Exception as e:
-        return 0.0, 0.0, 0, f"Analysis error: {str(e)}"
+            target_ipa = "Unavailable"
+            spoken_ipa = "Unavailable"
+
+        feedback = [
+            f"Target IPA: /{target_ipa}/",
+            f"Spoken IPA: /{spoken_ipa}/",
+            f"Transcript match: {transcript_match}%",
+            f"Speech rate: {wpm} words/minute",
+            f"Estimated waveform silence: {silence_pct}%"
+        ]
+
+        if waveform_pauses:
+            feedback.append(f"Estimated pauses (>=0.20s): {waveform_pauses}")
+
+        if wpm > 200:
+            feedback.append("Try a slower pace and add deliberate pauses.")
+        elif wpm >= 120:
+            feedback.append("Pace is in a common conversational range; focus on consistency.")
+        elif wpm >= 80:
+            feedback.append("Pace is relatively slow; keep speech comfortable and natural.")
+        else:
+            feedback.append("Pace is very slow; avoid forcing a rate and prioritize comfortable speech.")
+
+        feedback.append("\n--- Word Analysis ---")
+        for symbol, expected, said in word_rows[:30]:
+            feedback.append(f"{symbol} Expected: {expected} | Heard: {said}")
+
+        feedback.append(
+            "\nNote: Whisper transcript matching cannot determine whether an individual "
+            "phoneme was articulated correctly. Use this as practice feedback, not a "
+            "clinical diagnosis or articulation score."
+        )
+
+        return {
+            "match": transcript_match,
+            "wpm": wpm,
+            "pause_count": waveform_pauses,
+            "silence_pct": silence_pct,
+            "loudness_db": loudness,
+            "word_rows": word_rows,
+            "feedback": "\n".join(feedback)
+        }
+    except Exception as exc:
+        return {
+            "match": 0.0, "wpm": 0.0, "pause_count": 0,
+            "silence_pct": 0.0, "loudness_db": -100.0,
+            "word_rows": [], "feedback": f"Analysis error: {exc}"
+        }
 
 def save_session(category, target, spoken, accuracy, speech_rate, pause_count, feedback, duration):
     """Save session with error handling"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         c.execute(
             "INSERT INTO sessions (timestamp, category, target, spoken, accuracy, speech_rate, pause_count, feedback, audio_duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (ts, category, target, spoken, accuracy, speech_rate, pause_count, feedback, duration)
@@ -360,10 +440,6 @@ def get_category_stats():
 st.title("🩺 NeuroSpeech Therapy Pro")
 st.markdown("### Comprehensive Speech Therapy for Cluttering & Articulation")
 
-# Check if model loaded successfully
-if model is None:
-    st.error("❌ Failed to load speech recognition model. Please refresh the page.")
-    st.stop()
 
 # Sidebar
 with st.sidebar:
@@ -402,11 +478,35 @@ with st.sidebar:
     )
     if uploaded_db:
         try:
-            with open(DB_PATH, "wb") as f:
-                f.write(uploaded_db.read())
-            st.success("✅ Progress restored!")
+            restore_dir = Path(DB_PATH).parent
+            candidate = restore_dir / ".restore_candidate.db"
+            raw = uploaded_db.getvalue()
+            if len(raw) > 25 * 1024 * 1024:
+                raise ValueError("Database backup is larger than 25 MB.")
+            candidate.write_bytes(raw)
+
+            conn = sqlite3.connect(candidate, timeout=5)
+            tables = {
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            conn.close()
+
+            if "sessions" not in tables:
+                raise ValueError("This file is not a NeuroSpeech session database.")
+
+            backup = restore_dir / "patient_history.before_restore.db"
+            if Path(DB_PATH).exists():
+                Path(DB_PATH).replace(backup)
+            candidate.replace(DB_PATH)
+            st.success("✅ Progress restored safely. Previous data was backed up.")
             st.rerun()
         except Exception as e:
+            try:
+                candidate.unlink(missing_ok=True)
+            except Exception:
+                pass
             st.error(f"Failed to restore database: {e}")
     
     stats = get_category_stats()
@@ -467,6 +567,11 @@ with col1:
                 audio_data = np.mean(audio_data, axis=1).astype(np.float32)
 
             duration = len(audio_data) / sample_rate
+            peak = float(np.max(np.abs(audio_data))) if audio_data.size else 0.0
+            if not np.isfinite(audio_data).all():
+                raise ValueError("Audio contains invalid numeric samples.")
+            if sample_rate <= 0 or audio_data.size == 0:
+                raise ValueError("Audio stream is empty or has an invalid sample rate.")
             
             # Validation
             if duration > 30:
@@ -474,7 +579,10 @@ with col1:
             elif duration < 0.5:
                 st.error("❌ Audio too short. Please speak the full phrase.")
             else:
-                with st.spinner("🧠 Analyzing your speech..."):
+                with st.spinner("🧠 Loading speech model and analyzing your speech..."):
+                    model = load_whisper_model()
+                    if model is None:
+                        raise RuntimeError("Whisper could not be loaded. Check the Space build/runtime logs.")
                     result = model.transcribe(
                         audio_data,
                         fp16=False,
@@ -487,22 +595,34 @@ with col1:
                 if not spoken_text:
                     st.error("❌ No speech detected. Please try again and speak clearly.")
                 else:
-                    accuracy, speech_rate, pause_count, feedback = analyze_speech_advanced(
+                    analysis = analyze_speech_advanced(
                         st.session_state.current_target,
                         spoken_text,
-                        duration
+                        duration,
+                        audio_data=audio_data,
+                        sample_rate=sample_rate,
                     )
+                    accuracy = analysis["match"]
+                    speech_rate = analysis["wpm"]
+                    pause_count = analysis["pause_count"]
+                    feedback = analysis["feedback"]
 
                     st.markdown("### 📝 You said:")
                     st.info(f'"{spoken_text}"')
 
-                    col_a, col_b, col_c = st.columns(3)
+                    col_a, col_b, col_c, col_d = st.columns(4)
                     with col_a:
                         st.metric("Transcript Match", f"{accuracy}%")
                     with col_b:
                         st.metric("Speech Rate", f"{speech_rate} wpm")
                     with col_c:
                         st.metric("Duration", f"{duration:.1f}s")
+                    with col_d:
+                        st.metric("Estimated Pauses", pause_count)
+                    st.caption(
+                        f"Waveform silence: {analysis['silence_pct']}% · "
+                        f"Average loudness: {analysis['loudness_db']} dBFS"
+                    )
 
                     if accuracy >= 85:
                         st.success("🎉 Excellent phrase match. Keep the same controlled pace.")
@@ -514,7 +634,7 @@ with col1:
                         st.error("🔄 Try again and speak the complete target phrase clearly.")
 
                     with st.expander("📋 Detailed Phonetic Feedback"):
-                        st.text(feedback)
+                        st.code(feedback, language="text")
 
                     save_session(
                         category,
@@ -573,7 +693,7 @@ if st.checkbox("Show Detailed History"):
                 short_cat = cat.split(' ')[-1][:20] if ' ' in cat else cat[:20]
                 st.text(f"{ts} - {short_cat}")
             with col_y:
-                st.text(f"Accuracy: {acc:.1f}%")
+                st.text(f"Match: {acc:.1f}%")
             with col_z:
                 st.text(f"Rate: {rate:.0f} wpm")
         
