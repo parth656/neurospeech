@@ -1,3 +1,12 @@
+---
+title: NeuroSpeech Therapy Pro
+emoji: 🩺
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 8501
+---
+
 # 🩺 NeuroSpeech Therapy Pro
 
 AI-powered speech therapy application for cluttering and articulation disorders.
@@ -45,7 +54,7 @@ AI-powered speech therapy application for cluttering and articulation disorders.
 ## 🛠️ Technologies
 
 - **Frontend:** Streamlit
-- **AI Model:** OpenAI Whisper (Base model)
+- **AI Model:** OpenAI Whisper (base.en by default; configurable)
 - **Speech Processing:** librosa, soundfile
 - **Phonetics:** eng-to-ipa
 - **Database:** SQLite
@@ -97,13 +106,13 @@ AI-powered speech therapy application for cluttering and articulation disorders.
 
 ## 🌐 Deployment
 
-### Deploy to Streamlit Cloud (Recommended)
+### Deploy to Hugging Face Spaces (Docker)
 
-1. Push your code to GitHub
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Connect your GitHub repository
-4. Select `app.py` as the main file
-5. Click Deploy!
+1. Push the repository to GitHub
+2. Create or open the Docker Space
+3. Point the Space to this repository or sync the files
+4. Ensure the Space exposes port `8501`
+5. For persistent history, attach a Storage Bucket and set `PERSISTENT_STORAGE_PATH=/data`
 
 ### Deploy to Render
 
@@ -150,10 +159,10 @@ This application is designed as a **supplementary practice tool** and is not a r
 
 ## 🔒 Privacy
 
-- All speech analysis happens locally or on the server
-- Audio recordings are temporary and deleted after processing
-- Session history is stored locally in SQLite database
-- No audio or personal data is sent to external services (except Whisper processing)
+- Speech recognition runs inside the Space container using Whisper
+- Uploaded audio is processed temporarily and the temp file is deleted after analysis
+- Session history uses SQLite; without a mounted volume it is ephemeral
+- For persistence, attach a Hugging Face Storage Bucket and set `PERSISTENT_STORAGE_PATH` to its mount path
 
 ## 🤝 Contributing
 
