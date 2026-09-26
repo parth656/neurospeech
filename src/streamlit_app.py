@@ -1,7 +1,13 @@
 # ================= HF + STREAMLIT SAFE SETUP =================
 import os
-os.environ["TRANSFORMERS_CACHE"] = "/tmp"
-os.environ["HF_HOME"] = "/tmp"
+from pathlib import Path
+
+# Keep model/cache data out of the source tree. A persistent HF Space can set
+# WHISPER_CACHE_DIR/PERSISTENT_STORAGE_PATH to a mounted persistent volume.
+WHISPER_CACHE_DIR = os.getenv("WHISPER_CACHE_DIR", "/tmp/whisper")
+Path(WHISPER_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+os.environ["HF_HOME"] = os.getenv("HF_HOME", "/tmp/huggingface")
+Path(os.environ["HF_HOME"]).mkdir(parents=True, exist_ok=True)
 
 import streamlit as st
 import whisper
@@ -13,7 +19,6 @@ import random
 import numpy as np
 import soundfile as sf
 import time
-from pathlib import Path
 import tempfile
 
 # ================= CONFIG =================
@@ -25,7 +30,7 @@ st.set_page_config(
 
 # ================= DATABASE =================
 # Use proper persistent storage for Hugging Face Spaces
-PERSISTENT_DIR = os.getenv("PERSISTENT_STORAGE_PATH", "./data")
+PERSISTENT_DIR = os.getenv("PERSISTENT_STORAGE_PATH", "/tmp/neurospeech_data")
 Path(PERSISTENT_DIR).mkdir(parents=True, exist_ok=True)
 DB_PATH = os.path.join(PERSISTENT_DIR, "patient_history.db")
 
@@ -65,8 +70,14 @@ init_db()
 def load_whisper_model():
     """Load Whisper model with error handling"""
     try:
-        # Use 'base' for better accuracy while maintaining reasonable speed
-        return whisper.load_model("base", device="cpu")
+        # Base is a good quality/speed trade-off on CPU. Override with
+        # WHISPER_MODEL_SIZE=tiny.en for faster cold starts on small Spaces.
+        model_size = os.getenv("WHISPER_MODEL_SIZE", "base")
+        return whisper.load_model(
+            model_size,
+            device="cpu",
+            download_root=WHISPER_CACHE_DIR,
+        )
     except Exception as e:
         st.error(f"Failed to load Whisper model: {e}")
         return None
@@ -235,10 +246,18 @@ def analyze_speech_advanced(target, spoken, audio_duration):
             return 0.0, 0.0, 0, "Invalid audio duration"
         
         # Accuracy
-        accuracy = round(
-            difflib.SequenceMatcher(None, target_clean, spoken_clean).ratio() * 100,
-            1
-        )
+        target_words = target_clean.split()
+        spoken_words = spoken_clean.split()
+
+        # Transcript similarity is a proxy for practice feedback; it is not a
+        # clinical articulation score.
+        word_ratio = difflib.SequenceMatcher(
+            None, target_words, spoken_words
+        ).ratio()
+        char_ratio = difflib.SequenceMatcher(
+            None, target_clean, spoken_clean
+        ).ratio()
+        accuracy = round((0.75 * word_ratio + 0.25 * char_ratio) * 100, 1)
         
         # Speech rate (words per minute)
         word_count = len(spoken.split())
@@ -270,9 +289,6 @@ def analyze_speech_advanced(target, spoken, audio_duration):
             feedback_parts.append("✓ Excellent moderate pace")
         
         # Word-by-word comparison
-        target_words = target_clean.split()
-        spoken_words = spoken_clean.split()
-        
         if len(target_words) > 0 and len(spoken_words) > 0:
             feedback_parts.append("\n--- Word Analysis ---")
             max_len = max(len(target_words), len(spoken_words))
@@ -474,20 +490,20 @@ with col1:
 
                     col_a, col_b, col_c = st.columns(3)
                     with col_a:
-                        st.metric("Accuracy", f"{accuracy}%")
+                        st.metric("Transcript Match", f"{accuracy}%")
                     with col_b:
                         st.metric("Speech Rate", f"{speech_rate} wpm")
                     with col_c:
                         st.metric("Duration", f"{duration:.1f}s")
 
                     if accuracy >= 85:
-                        st.success("🎉 Excellent! Your articulation is clear and accurate.")
+                        st.success("🎉 Excellent phrase match. Keep the same controlled pace.")
                     elif accuracy >= 70:
-                        st.warning("👍 Good effort! Review the feedback below for improvement.")
+                        st.warning("👍 Good effort. Review the word-by-word feedback.")
                     elif accuracy >= 50:
-                        st.warning("💪 Keep practicing! Focus on the tips provided.")
+                        st.warning("💪 Keep practicing. Slow down and focus on each target word.")
                     else:
-                        st.error("🔄 Try again - slow down and focus on each sound.")
+                        st.error("🔄 Try again and speak the complete target phrase clearly.")
 
                     with st.expander("📋 Detailed Phonetic Feedback"):
                         st.text(feedback)
