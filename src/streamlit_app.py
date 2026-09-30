@@ -1,10 +1,9 @@
 # ================= HF + STREAMLIT SAFE SETUP =================
 import os
 import hashlib
+import io
 from pathlib import Path
 
-# Keep model/cache data out of the source tree. A persistent HF Space can set
-# WHISPER_CACHE_DIR/PERSISTENT_STORAGE_PATH to a mounted persistent volume.
 WHISPER_CACHE_DIR = os.getenv("WHISPER_CACHE_DIR", "/tmp/whisper")
 Path(WHISPER_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 os.environ["HF_HOME"] = os.getenv("HF_HOME", "/tmp/huggingface")
@@ -23,21 +22,17 @@ import soundfile as sf
 import time
 import tempfile
 
-# ================= CONFIG =================
 st.set_page_config(
     page_title="NeuroSpeech Therapy Pro",
     page_icon="🩺",
     layout="wide"
 )
 
-# ================= DATABASE =================
-# Use proper persistent storage for Hugging Face Spaces
 PERSISTENT_DIR = os.getenv("PERSISTENT_STORAGE_PATH", "/tmp/neurospeech_data")
 Path(PERSISTENT_DIR).mkdir(parents=True, exist_ok=True)
 DB_PATH = os.path.join(PERSISTENT_DIR, "patient_history.db")
 
 def init_db():
-    """Initialize database with proper error handling"""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=10)
         c = conn.cursor()
@@ -55,7 +50,6 @@ def init_db():
                 audio_duration REAL
             )
         """)
-        # Add index for faster queries
         c.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON sessions(timestamp DESC)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_category ON sessions(category)")
         conn.commit()
@@ -67,13 +61,9 @@ def init_db():
 
 init_db()
 
-# ================= LOAD WHISPER =================
 @st.cache_resource
 def load_whisper_model():
-    """Load Whisper model with error handling"""
     try:
-        # Base is a good quality/speed trade-off on CPU. Override with
-        # WHISPER_MODEL_SIZE=tiny.en for faster cold starts on small Spaces.
         model_size = os.getenv("WHISPER_MODEL_SIZE", "base.en")
         return whisper.load_model(
             model_size,
@@ -86,7 +76,6 @@ def load_whisper_model():
 
 model = None
 
-# ================= COMPREHENSIVE THERAPY PHRASES =================
 therapy_modules = {
     "🎯 Cluttering Control": {
         "description": "Slow down, pause strategically, improve clarity",
@@ -99,7 +88,6 @@ therapy_modules = {
         ],
         "tips": "Focus on: 1) Slowing speech rate 2) Adding pauses 3) Clear word boundaries"
     },
-    
     "🔤 Articulation - Bilabials (P, B, M)": {
         "description": "Practice lip sounds",
         "exercises": [
@@ -111,7 +99,6 @@ therapy_modules = {
         ],
         "tips": "Keep lips closed, then release with controlled airflow"
     },
-    
     "🔤 Articulation - Alveolars (T, D, N, L)": {
         "description": "Tongue tip behind teeth",
         "exercises": [
@@ -123,7 +110,6 @@ therapy_modules = {
         ],
         "tips": "Tongue touches ridge behind upper teeth"
     },
-    
     "🔤 Articulation - Velars (K, G)": {
         "description": "Back of tongue exercises",
         "exercises": [
@@ -135,7 +121,6 @@ therapy_modules = {
         ],
         "tips": "Back of tongue rises to soft palate"
     },
-    
     "🔤 Articulation - Fricatives (F, V, S, Z, TH)": {
         "description": "Continuous airflow sounds",
         "exercises": [
@@ -147,7 +132,6 @@ therapy_modules = {
         ],
         "tips": "Create friction with continuous airflow"
     },
-    
     "🌊 Liquid Sounds (R, L)": {
         "description": "Complex tongue movements",
         "exercises": [
@@ -159,7 +143,6 @@ therapy_modules = {
         ],
         "tips": "R: Tongue tip up but not touching. L: Tongue tip touches ridge"
     },
-    
     "🎭 Blends & Clusters": {
         "description": "Multiple consonants together",
         "exercises": [
@@ -171,7 +154,6 @@ therapy_modules = {
         ],
         "tips": "Don't insert vowels between consonants"
     },
-    
     "⏱️ Pacing & Rhythm": {
         "description": "Control speech rate and timing",
         "exercises": [
@@ -183,7 +165,6 @@ therapy_modules = {
         ],
         "tips": "Use metronome technique: pause after each phrase"
     },
-    
     "🗣️ Sentence Complexity": {
         "description": "Maintain clarity in longer phrases",
         "exercises": [
@@ -195,7 +176,6 @@ therapy_modules = {
         ],
         "tips": "Break into chunks, pause at natural boundaries"
     },
-    
     "🎵 Prosody & Intonation": {
         "description": "Stress, pitch, and melody of speech",
         "exercises": [
@@ -207,7 +187,6 @@ therapy_modules = {
         ],
         "tips": "Emphasize capitalized words with pitch change"
     },
-    
     "🔄 Repetition Drills": {
         "description": "Build motor memory",
         "exercises": [
@@ -219,7 +198,6 @@ therapy_modules = {
         ],
         "tips": "Repeat 10 times, gradually increase speed while maintaining clarity"
     },
-    
     "💬 Conversational Practice": {
         "description": "Natural speech situations",
         "exercises": [
@@ -233,23 +211,17 @@ therapy_modules = {
     }
 }
 
-# ================= SPEECH ANALYSIS =================
 def normalize_text(text):
-    """Normalize ASR text for comparison."""
     return re.sub(r"[^a-z0-9']+", " ", str(text).lower()).strip()
 
-
 def rms_db(audio):
-    """Return RMS loudness in dBFS."""
     audio = np.asarray(audio, dtype=np.float32)
     if audio.size == 0:
         return -100.0
     rms = float(np.sqrt(np.mean(np.square(audio), dtype=np.float64)))
     return round(20 * np.log10(max(rms, 1e-7)), 1)
 
-
 def estimate_silence(audio, sample_rate, threshold_db=-42.0):
-    """Estimate silence from waveform energy; this is not a clinical pause measure."""
     audio = np.asarray(audio, dtype=np.float32)
     if audio.size == 0 or sample_rate <= 0:
         return 0.0, 0
@@ -268,9 +240,7 @@ def estimate_silence(audio, sample_rate, threshold_db=-42.0):
     pauses = int(sum((e - s) * frame / sample_rate >= 0.20 for s, e in zip(runs, ends)))
     return round(ratio * 100, 1), pauses
 
-
 def compare_words(target_words, spoken_words):
-    """Produce readable word-level alignment using SequenceMatcher opcodes."""
     matcher = difflib.SequenceMatcher(None, target_words, spoken_words)
     rows = []
     correct = 0
@@ -293,56 +263,30 @@ def compare_words(target_words, spoken_words):
                 rows.append(("+", "[extra]", word))
     return rows, correct
 
-
 def analyze_speech_advanced(target, spoken, audio_duration, audio_data=None, sample_rate=0):
-    """Analyze transcript and basic acoustic measures for practice feedback.
-
-    These metrics are proxies for practice and should not be interpreted as
-    diagnosis or a clinical articulation score.
-    """
     try:
         target_clean = normalize_text(target)
         spoken_clean = normalize_text(spoken)
-
         if not target_clean or not spoken_clean:
-            return {
-                "match": 0.0, "wpm": 0.0, "pause_count": 0,
-                "silence_pct": 0.0, "loudness_db": -100.0,
-                "word_rows": [], "feedback": "No usable speech transcript was detected."
-            }
-
+            return {"match": 0.0, "wpm": 0.0, "pause_count": 0, "silence_pct": 0.0, "loudness_db": -100.0, "word_rows": [], "feedback": "No usable speech transcript was detected."}
         if audio_duration <= 0:
-            return {
-                "match": 0.0, "wpm": 0.0, "pause_count": 0,
-                "silence_pct": 0.0, "loudness_db": -100.0,
-                "word_rows": [], "feedback": "Invalid audio duration."
-            }
-
+            return {"match": 0.0, "wpm": 0.0, "pause_count": 0, "silence_pct": 0.0, "loudness_db": -100.0, "word_rows": [], "feedback": "Invalid audio duration."}
         target_words = target_clean.split()
         spoken_words = spoken_clean.split()
         word_rows, correct_words = compare_words(target_words, spoken_words)
-
         word_ratio = difflib.SequenceMatcher(None, target_words, spoken_words).ratio()
         char_ratio = difflib.SequenceMatcher(None, target_clean, spoken_clean).ratio()
         transcript_match = round((0.75 * word_ratio + 0.25 * char_ratio) * 100, 1)
-
         word_count = len(spoken_words)
         wpm = round((word_count / audio_duration) * 60, 1)
-
-        silence_pct, waveform_pauses = (
-            estimate_silence(audio_data, sample_rate)
-            if audio_data is not None and sample_rate
-            else (0.0, 0)
-        )
+        silence_pct, waveform_pauses = estimate_silence(audio_data, sample_rate) if audio_data is not None and sample_rate else (0.0, 0)
         loudness = rms_db(audio_data) if audio_data is not None else -100.0
-
         try:
             target_ipa = ipa.convert(target_clean)
             spoken_ipa = ipa.convert(spoken_clean)
         except Exception:
             target_ipa = "Unavailable"
             spoken_ipa = "Unavailable"
-
         feedback = [
             f"Target IPA: /{target_ipa}/",
             f"Spoken IPA: /{spoken_ipa}/",
@@ -350,10 +294,8 @@ def analyze_speech_advanced(target, spoken, audio_duration, audio_data=None, sam
             f"Speech rate: {wpm} words/minute",
             f"Estimated waveform silence: {silence_pct}%"
         ]
-
         if waveform_pauses:
             feedback.append(f"Estimated pauses (>=0.20s): {waveform_pauses}")
-
         if wpm > 200:
             feedback.append("Try a slower pace and add deliberate pauses.")
         elif wpm >= 120:
@@ -362,43 +304,20 @@ def analyze_speech_advanced(target, spoken, audio_duration, audio_data=None, sam
             feedback.append("Pace is relatively slow; keep speech comfortable and natural.")
         else:
             feedback.append("Pace is very slow; avoid forcing a rate and prioritize comfortable speech.")
-
         feedback.append("\n--- Word Analysis ---")
         for symbol, expected, said in word_rows[:30]:
             feedback.append(f"{symbol} Expected: {expected} | Heard: {said}")
-
-        feedback.append(
-            "\nNote: Whisper transcript matching cannot determine whether an individual "
-            "phoneme was articulated correctly. Use this as practice feedback, not a "
-            "clinical diagnosis or articulation score."
-        )
-
-        return {
-            "match": transcript_match,
-            "wpm": wpm,
-            "pause_count": waveform_pauses,
-            "silence_pct": silence_pct,
-            "loudness_db": loudness,
-            "word_rows": word_rows,
-            "feedback": "\n".join(feedback)
-        }
+        feedback.append("\nNote: Whisper transcript matching cannot determine whether an individual phoneme was articulated correctly. Use this as practice feedback, not a clinical diagnosis or articulation score.")
+        return {"match": transcript_match, "wpm": wpm, "pause_count": waveform_pauses, "silence_pct": silence_pct, "loudness_db": loudness, "word_rows": word_rows, "feedback": "\n".join(feedback)}
     except Exception as exc:
-        return {
-            "match": 0.0, "wpm": 0.0, "pause_count": 0,
-            "silence_pct": 0.0, "loudness_db": -100.0,
-            "word_rows": [], "feedback": f"Analysis error: {exc}"
-        }
+        return {"match": 0.0, "wpm": 0.0, "pause_count": 0, "silence_pct": 0.0, "loudness_db": -100.0, "word_rows": [], "feedback": f"Analysis error: {exc}"}
 
 def save_session(category, target, spoken, accuracy, speech_rate, pause_count, feedback, duration):
-    """Save session with error handling"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        c.execute(
-            "INSERT INTO sessions (timestamp, category, target, spoken, accuracy, speech_rate, pause_count, feedback, audio_duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (ts, category, target, spoken, accuracy, speech_rate, pause_count, feedback, duration)
-        )
+        c.execute("INSERT INTO sessions (timestamp, category, target, spoken, accuracy, speech_rate, pause_count, feedback, audio_duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (ts, category, target, spoken, accuracy, speech_rate, pause_count, feedback, duration))
         conn.commit()
         conn.close()
         return True
@@ -407,14 +326,10 @@ def save_session(category, target, spoken, accuracy, speech_rate, pause_count, f
         return False
 
 def get_history(limit=20):
-    """Get session history with error handling"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute(
-            "SELECT timestamp, category, accuracy, speech_rate FROM sessions ORDER BY timestamp DESC LIMIT ?",
-            (limit,)
-        )
+        c.execute("SELECT timestamp, category, accuracy, speech_rate FROM sessions ORDER BY timestamp DESC LIMIT ?", (limit,))
         rows = c.fetchall()
         conn.close()
         return rows
@@ -423,13 +338,10 @@ def get_history(limit=20):
         return []
 
 def get_category_stats():
-    """Get category statistics with error handling"""
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute(
-            "SELECT category, AVG(accuracy) as avg_acc, COUNT(*) as count FROM sessions GROUP BY category ORDER BY count DESC"
-        )
+        c.execute("SELECT category, AVG(accuracy) as avg_acc, COUNT(*) as count FROM sessions GROUP BY category ORDER BY count DESC")
         rows = c.fetchall()
         conn.close()
         return rows
@@ -437,46 +349,24 @@ def get_category_stats():
         st.error(f"Failed to fetch stats: {e}")
         return []
 
-# ================= UI =================
 st.title("🩺 NeuroSpeech Therapy Pro")
 st.markdown("### Comprehensive Speech Therapy for Cluttering & Articulation")
 
-
-# Sidebar
 with st.sidebar:
     st.header("⚙️ Therapy Settings")
-    
-    category = st.selectbox(
-        "Select Module",
-        list(therapy_modules.keys()),
-        help="Choose your target area"
-    )
-    
+    category = st.selectbox("Select Module", list(therapy_modules.keys()), help="Choose your target area")
     st.markdown("---")
     st.markdown(f"**{therapy_modules[category]['description']}**")
-    st.info(therapy_modules[category]['tips'])
-    
+    st.info(therapy_modules[category]["tips"])
     st.markdown("---")
     st.subheader("📊 Your Progress")
-    
-    # Database backup/restore
     if os.path.exists(DB_PATH):
         try:
             with open(DB_PATH, "rb") as f:
-                st.download_button(
-                    "💾 Download Progress",
-                    f,
-                    file_name="my_speech_progress.db",
-                    help="Save your therapy history"
-                )
+                st.download_button("💾 Download Progress", f, file_name="my_speech_progress.db", help="Save your therapy history")
         except Exception as e:
             st.warning(f"Cannot download database: {e}")
-    
-    uploaded_db = st.file_uploader(
-        "📂 Restore Progress",
-        type=["db"],
-        help="Upload previously saved database"
-    )
+    uploaded_db = st.file_uploader("📂 Restore Progress", type=["db"], help="Upload previously saved database")
     if uploaded_db:
         try:
             restore_dir = Path(DB_PATH).parent
@@ -485,18 +375,11 @@ with st.sidebar:
             if len(raw) > 25 * 1024 * 1024:
                 raise ValueError("Database backup is larger than 25 MB.")
             candidate.write_bytes(raw)
-
             conn = sqlite3.connect(candidate, timeout=5)
-            tables = {
-                row[0] for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
             conn.close()
-
             if "sessions" not in tables:
                 raise ValueError("This file is not a NeuroSpeech session database.")
-
             backup = restore_dir / "patient_history.before_restore.db"
             if Path(DB_PATH).exists():
                 Path(DB_PATH).replace(backup)
@@ -509,76 +392,95 @@ with st.sidebar:
             except Exception:
                 pass
             st.error(f"Failed to restore database: {e}")
-    
     stats = get_category_stats()
     if stats:
-        for cat, avg_acc, count in stats[:5]:  # Show top 5
+        for cat, avg_acc, count in stats[:5]:
             short_name = cat.split(" ")[-1][:15] if " " in cat else cat[:15]
             st.metric(short_name, f"{avg_acc:.1f}%", f"{count} sessions")
     else:
         st.info("Start practicing to see stats")
 
-# Main content
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    # Initialize session state properly
     if "current_target" not in st.session_state or "category" not in st.session_state:
         st.session_state.current_target = random.choice(therapy_modules[category]["exercises"])
         st.session_state.category = category
-
     if st.session_state.category != category:
         st.session_state.current_target = random.choice(therapy_modules[category]["exercises"])
         st.session_state.category = category
-
     if st.button("🎲 Get New Phrase", use_container_width=True):
         st.session_state.current_target = random.choice(therapy_modules[category]["exercises"])
         st.rerun()
-
     st.markdown("---")
-    st.markdown(f"### 🎯 Target Phrase:")
+    st.markdown("### 🎯 Target Phrase:")
     st.markdown(f"# {st.session_state.current_target}")
-    
     try:
         ipa_text = ipa.convert(st.session_state.current_target)
         st.caption(f"IPA: /{ipa_text}/")
     except Exception:
         st.caption("IPA conversion unavailable")
-    
     st.markdown("---")
-
-    # Audio input with instructions
     st.markdown("**Instructions:** Click the microphone button below and speak the target phrase clearly.")
-    audio = st.audio_input("🎙️ Record your voice", sample_rate=16000)
+    st.caption("🎙️ If the microphone recorder fails on your browser, use the audio-file fallback below.")
+
+    audio = st.audio_input(
+        "🎙️ Record your voice",
+        sample_rate=16000,
+        key="neurospeech_voice_recorder",
+        help="Record a short 1–30 second English speech sample."
+    )
+
+    uploaded_audio = st.file_uploader(
+        "Or upload a recording",
+        type=["wav", "mp3", "m4a", "ogg", "webm"],
+        key="neurospeech_audio_upload",
+        help="Use this if the microphone recorder shows an error."
+    )
 
     if audio is not None:
         audio_bytes = audio.getvalue()
+        audio_source_name = "microphone.wav"
+    elif uploaded_audio is not None:
+        audio_bytes = uploaded_audio.getvalue()
+        audio_source_name = uploaded_audio.name or "uploaded_audio"
+    else:
+        audio_bytes = None
+        audio_source_name = ""
+
+    if audio_bytes:
         audio_hash = hashlib.sha256(audio_bytes).hexdigest()
         if st.session_state.get("last_audio_hash") == audio_hash:
-            st.info("This recording has already been analyzed. Record a new sample to analyze again.")
-            audio = None
+            st.info("This recording has already been analyzed. Record or upload a new sample.")
+            audio_bytes = None
 
-    if audio is not None:
-        # Use tempfile for better cleanup
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+    if audio_bytes:
+        suffix = Path(audio_source_name).suffix.lower() or ".wav"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             tmp_path = tmp_file.name
             tmp_file.write(audio_bytes)
-        
         try:
-            # Read audio file
-            audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
-
-            # Convert to mono if stereo
+            try:
+                audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
+            except Exception:
+                import subprocess
+                proc = subprocess.run(
+                    ["ffmpeg", "-v", "error", "-i", tmp_path, "-f", "wav", "-ac", "1", "-ar", "16000", "pipe:1"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                if proc.returncode != 0 or not proc.stdout:
+                    detail = proc.stderr.decode("utf-8", errors="replace").strip()
+                    raise RuntimeError(f"Could not decode the audio file. {detail[-500:]}")
+                audio_data, sample_rate = sf.read(io.BytesIO(proc.stdout), dtype="float32")
             if len(audio_data.shape) > 1:
                 audio_data = np.mean(audio_data, axis=1).astype(np.float32)
-
             duration = len(audio_data) / sample_rate
             if not np.isfinite(audio_data).all():
                 raise ValueError("Audio contains invalid numeric samples.")
             if sample_rate <= 0 or audio_data.size == 0:
                 raise ValueError("Audio stream is empty or has an invalid sample rate.")
-            
-            # Validation
             if duration > 30:
                 st.error("❌ Audio too long. Please record less than 30 seconds.")
             elif duration < 0.5:
@@ -588,33 +490,18 @@ with col1:
                     model = load_whisper_model()
                     if model is None:
                         raise RuntimeError("Whisper could not be loaded. Check the Space build/runtime logs.")
-                    result = model.transcribe(
-                        audio_data,
-                        fp16=False,
-                        language="en",
-                        temperature=0,
-                        condition_on_previous_text=False,
-                    )
+                    result = model.transcribe(audio_data, fp16=False, language="en", temperature=0, condition_on_previous_text=False)
                     spoken_text = result["text"].strip()
-
                 if not spoken_text:
                     st.error("❌ No speech detected. Please try again and speak clearly.")
                 else:
-                    analysis = analyze_speech_advanced(
-                        st.session_state.current_target,
-                        spoken_text,
-                        duration,
-                        audio_data=audio_data,
-                        sample_rate=sample_rate,
-                    )
+                    analysis = analyze_speech_advanced(st.session_state.current_target, spoken_text, duration, audio_data=audio_data, sample_rate=sample_rate)
                     accuracy = analysis["match"]
                     speech_rate = analysis["wpm"]
                     pause_count = analysis["pause_count"]
                     feedback = analysis["feedback"]
-
                     st.markdown("### 📝 You said:")
                     st.info(f'"{spoken_text}"')
-
                     col_a, col_b, col_c, col_d = st.columns(4)
                     with col_a:
                         st.metric("Transcript Match", f"{accuracy}%")
@@ -624,11 +511,7 @@ with col1:
                         st.metric("Duration", f"{duration:.1f}s")
                     with col_d:
                         st.metric("Estimated Pauses", pause_count)
-                    st.caption(
-                        f"Waveform silence: {analysis['silence_pct']}% · "
-                        f"Average loudness: {analysis['loudness_db']} dBFS"
-                    )
-
+                    st.caption(f"Waveform silence: {analysis['silence_pct']}% · Average loudness: {analysis['loudness_db']} dBFS")
                     if accuracy >= 85:
                         st.success("🎉 Excellent phrase match. Keep the same controlled pace.")
                     elif accuracy >= 70:
@@ -637,27 +520,13 @@ with col1:
                         st.warning("💪 Keep practicing. Slow down and focus on each target word.")
                     else:
                         st.error("🔄 Try again and speak the complete target phrase clearly.")
-
                     with st.expander("📋 Detailed Phonetic Feedback"):
                         st.code(feedback, language="text")
-
-                    save_session(
-                        category,
-                        st.session_state.current_target,
-                        spoken_text,
-                        accuracy,
-                        speech_rate,
-                        pause_count,
-                        feedback,
-                        duration
-                    )
+                    save_session(category, st.session_state.current_target, spoken_text, accuracy, speech_rate, pause_count, feedback, duration)
                     st.session_state.last_audio_hash = audio_hash
-        
         except Exception as e:
             st.error(f"❌ Error processing audio: {str(e)}")
-        
         finally:
-            # Cleanup temp file
             try:
                 os.unlink(tmp_path)
             except Exception:
@@ -665,7 +534,6 @@ with col1:
 
 with col2:
     st.markdown("### 💡 Quick Tips")
-    
     if "Cluttering" in category:
         st.markdown("""
         **For Cluttering:**
@@ -685,10 +553,8 @@ with col2:
         - 📹 Record yourself
         """)
 
-# History section
 st.markdown("---")
 st.subheader("📈 Progress Tracking")
-
 if st.checkbox("Show Detailed History"):
     history = get_history()
     if history:
@@ -702,13 +568,11 @@ if st.checkbox("Show Detailed History"):
                 st.text(f"Match: {acc:.1f}%")
             with col_z:
                 st.text(f"Rate: {rate:.0f} wpm")
-        
         st.markdown("---")
         st.markdown("**Accuracy Trend:**")
         scores = [h[2] for h in history][::-1]
         if scores:
             st.line_chart(scores)
-        
         st.markdown("**Speech Rate Trend:**")
         rates = [h[3] for h in history if h[3] > 0][::-1]
         if rates:

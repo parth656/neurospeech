@@ -1,4 +1,4 @@
-streamlit>=1.48,<2
+streamlit==1.50.0
 openai-whisper==20250625
 eng-to-ipa==0.0.2
 numpy>=1.26,<3
