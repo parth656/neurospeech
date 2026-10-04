@@ -55,7 +55,7 @@ AI-powered speech therapy application for cluttering and articulation disorders.
 
 - **Frontend:** Streamlit
 - **AI Model:** OpenAI Whisper (base.en by default; configurable)
-- **Speech Processing:** librosa, soundfile
+- **Speech Processing:** FFmpeg + soundfile
 - **Phonetics:** eng-to-ipa
 - **Database:** SQLite
 - **Language:** Python 3.11+
@@ -98,7 +98,7 @@ AI-powered speech therapy application for cluttering and articulation disorders.
 
 4. **Run the application**
    ```bash
-   streamlit run app.py
+   streamlit run src/streamlit_app.py
    ```
 
 5. **Open your browser**
@@ -126,11 +126,12 @@ AI-powered speech therapy application for cluttering and articulation disorders.
 
 ```
 neurospeech/
-├── app.py                    # Main Streamlit application
-├── requirements.txt          # Python dependencies
-├── packages.txt             # System dependencies (for Streamlit Cloud)
-├── README.md                # This file
-├── .gitignore              # Git ignore rules
+├── src/
+│   └── streamlit_app.py     # Main Streamlit application
+├── Dockerfile               # Hugging Face Spaces / Docker runtime
+├── requirements.txt         # Python dependencies
+├── README.md                # Project documentation
+├── .gitignore               # Git ignore rules
 ```
 
 ## 💡 Usage
@@ -160,7 +161,7 @@ This application is designed as a **supplementary practice tool** and is not a r
 ## 🔒 Privacy
 
 - Speech recognition runs inside the Space container using Whisper
-- Uploaded audio is processed temporarily and the temp file is deleted after analysis
+- Uploaded audio is decoded in memory by FFmpeg and is not persisted after analysis
 - Session history uses SQLite; without a mounted volume it is ephemeral
 - For persistence, attach a Hugging Face Storage Bucket and set `PERSISTENT_STORAGE_PATH` to its mount path
 
@@ -203,6 +204,7 @@ If you encounter any issues or have questions:
 - [ ] Multi-language support
 - [ ] Mobile app version
 - [ ] Integration with therapy platforms
+- [x] Robust audio decoding and 16 kHz normalization
 - [ ] Advanced voice quality metrics
 - [ ] Custom phrase uploads
 - [ ] Therapist dashboard
