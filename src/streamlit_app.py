@@ -21,7 +21,6 @@ import re
 import numpy as np
 import soundfile as sf
 import queue
-import av
 from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 st.set_page_config(
@@ -349,55 +348,70 @@ def get_category_stats():
 
 
 def collect_realtime_audio():
-    """Record microphone audio through WebRTC and return it after Stop."""
-    audio_queue = queue.Queue()
-
-    def audio_frame_callback(frame: av.AudioFrame):
-        try:
-            audio_queue.put_nowait(frame.to_ndarray(format="s16").copy())
-        except Exception:
-            pass
-        return frame
-
-    st.markdown("### 🎙️ Real-Time Voice Recorder")
-    st.caption("Allow microphone access, press START, speak your target phrase, then press STOP.")
-
+    """Record microphone audio from the browser until the user presses STOP."""
     ctx = webrtc_streamer(
         key="neurospeech-realtime-recorder",
         mode=WebRtcMode.SENDONLY,
-        audio_frame_callback=audio_frame_callback,
-        media_stream_constraints={"audio": True, "video": False},
-        async_processing=True,
+        audio_receiver_size=256,
+        rtc_configuration={
+            "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+        },
+        media_stream_constraints={
+            "audio": {
+                "channelCount": 1,
+                "echoCancellation": True,
+                "noiseSuppression": True,
+                "autoGainControl": True,
+            },
+            "video": False,
+        },
+        media_toggle_controls=False,
     )
 
-    if ctx.state.playing:
-        st.info("🔴 Recording is active — speak naturally and clearly.")
+    if not ctx.state.playing:
         return None
 
+    st.info("🔴 Recording... Speak your target phrase, then press STOP.")
     frames = []
-    while True:
-        try:
-            frames.append(audio_queue.get_nowait())
-        except queue.Empty:
-            break
+    sample_rate = None
 
-    if not frames:
+    # Pull frames from the WebRTC receiver while the browser stream is active.
+    # This keeps the Streamlit script alive and avoids losing frames between
+    # Streamlit reruns.
+    while ctx.state.playing:
+        if not ctx.audio_receiver:
+            break
+        try:
+            audio_frames = ctx.audio_receiver.get_frames(timeout=1)
+        except queue.Empty:
+            continue
+
+        for frame in audio_frames:
+            if sample_rate is None:
+                sample_rate = int(frame.sample_rate)
+            frames.append(frame.to_ndarray(format="s16").copy())
+
+    if not frames or not sample_rate:
         return None
 
     try:
-        audio = np.concatenate(frames, axis=1)
-    except Exception:
-        audio = np.concatenate([np.atleast_2d(x) for x in frames], axis=1)
+        audio = np.concatenate(frames, axis=1).T
+    except Exception as exc:
+        raise RuntimeError(f"Could not assemble microphone frames: {exc}") from exc
 
-    if audio.ndim == 2:
-        audio = audio.T
+    if audio.ndim == 2 and audio.shape[1] > 1:
+        audio = np.mean(audio, axis=1)
 
-    # WebRTC audio is normally 48 kHz. Keep the original sample rate in a WAV
-    # container; decode_audio_bytes() will normalize it to mono 16 kHz with FFmpeg.
-    sample_rate = 48000
     wav_buffer = io.BytesIO()
-    sf.write(wav_buffer, audio, sample_rate, format="WAV", subtype="PCM_16")
+    sf.write(
+        wav_buffer,
+        np.asarray(audio, dtype=np.int16),
+        sample_rate,
+        format="WAV",
+        subtype="PCM_16",
+    )
     return wav_buffer.getvalue()
+
 
 def decode_audio_bytes(audio_bytes):
     """Decode any supported upload to mono 16 kHz float32 audio for Whisper."""
