@@ -344,6 +344,81 @@ def get_category_stats():
         st.error(f"Failed to fetch stats: {e}")
         return []
 
+def decode_audio_bytes(audio_bytes):
+    """Decode any supported upload to mono 16 kHz float32 audio for Whisper."""
+    if not audio_bytes:
+        raise ValueError("The recording is empty.")
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        raise ValueError("Audio file is larger than 25 MB.")
+
+    import subprocess
+
+    # FFmpeg is the primary decoder because browser uploads may be WAV, WebM,
+    # MP3, M4A, or OGG. Converting here also guarantees Whisper gets 16 kHz mono.
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", "pipe:0",
+            "-f", "wav", "-ac", "1", "-ar", "16000",
+            "pipe:1",
+        ],
+        input=audio_bytes,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        # Keep a direct WAV fallback for unusual FFmpeg/container failures.
+        try:
+            audio_data, sample_rate = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+            if audio_data.ndim > 1:
+                audio_data = np.mean(audio_data, axis=1)
+            if sample_rate != 16000:
+                raise ValueError("Audio is not 16 kHz and FFmpeg conversion failed.")
+            return np.asarray(audio_data, dtype=np.float32), int(sample_rate)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                "Could not decode the recording. "
+                f"FFmpeg: {detail[-300:] or 'unknown error'}; "
+                f"WAV fallback: {fallback_error}"
+            ) from fallback_error
+
+    try:
+        audio_data, sample_rate = sf.read(io.BytesIO(proc.stdout), dtype="float32")
+    except Exception as exc:
+        raise RuntimeError(f"Decoded audio could not be read: {exc}") from exc
+
+    if audio_data.ndim > 1:
+        audio_data = np.mean(audio_data, axis=1)
+    audio_data = np.asarray(audio_data, dtype=np.float32)
+    sample_rate = int(sample_rate)
+
+    if sample_rate != 16000:
+        raise RuntimeError(f"Audio normalization failed: expected 16000 Hz, got {sample_rate} Hz.")
+    if audio_data.size == 0:
+        raise ValueError("The recording contains no audio samples.")
+    if not np.isfinite(audio_data).all():
+        raise ValueError("The recording contains invalid audio samples.")
+    return audio_data, sample_rate
+
+
+def transcribe_audio(model, audio_data):
+    """Transcribe a normalized 16 kHz waveform with conservative Whisper settings."""
+    result = model.transcribe(
+        audio_data,
+        fp16=False,
+        language="en",
+        task="transcribe",
+        temperature=0,
+        condition_on_previous_text=False,
+        verbose=False,
+    )
+    return (result.get("text") or "").strip()
+
+
+
 st.title("🩺 NeuroSpeech Therapy Pro")
 st.markdown("### Comprehensive Speech Therapy for Cluttering & Articulation")
 
@@ -444,80 +519,6 @@ with col1:
         if st.session_state.get("last_audio_hash") == audio_hash:
             st.info("This recording has already been analyzed. Record or upload a new sample.")
             audio_bytes = None
-
-def decode_audio_bytes(audio_bytes):
-    """Decode any supported upload to mono 16 kHz float32 audio for Whisper."""
-    if not audio_bytes:
-        raise ValueError("The recording is empty.")
-    if len(audio_bytes) > 25 * 1024 * 1024:
-        raise ValueError("Audio file is larger than 25 MB.")
-
-    import subprocess
-
-    # FFmpeg is the primary decoder because browser uploads may be WAV, WebM,
-    # MP3, M4A, or OGG. Converting here also guarantees Whisper gets 16 kHz mono.
-    proc = subprocess.run(
-        [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-i", "pipe:0",
-            "-f", "wav", "-ac", "1", "-ar", "16000",
-            "pipe:1",
-        ],
-        input=audio_bytes,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=30,
-        check=False,
-    )
-    if proc.returncode != 0 or not proc.stdout:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip()
-        # Keep a direct WAV fallback for unusual FFmpeg/container failures.
-        try:
-            audio_data, sample_rate = sf.read(io.BytesIO(audio_bytes), dtype="float32")
-            if audio_data.ndim > 1:
-                audio_data = np.mean(audio_data, axis=1)
-            if sample_rate != 16000:
-                raise ValueError("Audio is not 16 kHz and FFmpeg conversion failed.")
-            return np.asarray(audio_data, dtype=np.float32), int(sample_rate)
-        except Exception as fallback_error:
-            raise RuntimeError(
-                "Could not decode the recording. "
-                f"FFmpeg: {detail[-300:] or 'unknown error'}; "
-                f"WAV fallback: {fallback_error}"
-            ) from fallback_error
-
-    try:
-        audio_data, sample_rate = sf.read(io.BytesIO(proc.stdout), dtype="float32")
-    except Exception as exc:
-        raise RuntimeError(f"Decoded audio could not be read: {exc}") from exc
-
-    if audio_data.ndim > 1:
-        audio_data = np.mean(audio_data, axis=1)
-    audio_data = np.asarray(audio_data, dtype=np.float32)
-    sample_rate = int(sample_rate)
-
-    if sample_rate != 16000:
-        raise RuntimeError(f"Audio normalization failed: expected 16000 Hz, got {sample_rate} Hz.")
-    if audio_data.size == 0:
-        raise ValueError("The recording contains no audio samples.")
-    if not np.isfinite(audio_data).all():
-        raise ValueError("The recording contains invalid audio samples.")
-    return audio_data, sample_rate
-
-
-def transcribe_audio(model, audio_data):
-    """Transcribe a normalized 16 kHz waveform with conservative Whisper settings."""
-    result = model.transcribe(
-        audio_data,
-        fp16=False,
-        language="en",
-        task="transcribe",
-        temperature=0,
-        condition_on_previous_text=False,
-        verbose=False,
-    )
-    return (result.get("text") or "").strip()
-
 
 if audio_bytes:
     try:
