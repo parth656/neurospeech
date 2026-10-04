@@ -20,8 +20,6 @@ import random
 import re
 import numpy as np
 import soundfile as sf
-import time
-import tempfile
 
 st.set_page_config(
     page_title="NeuroSpeech Therapy Pro",
