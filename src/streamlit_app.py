@@ -417,26 +417,22 @@ with col1:
         st.caption("IPA conversion unavailable")
     st.markdown("---")
     st.markdown("**Instructions:** Click the microphone button below and speak the target phrase clearly.")
-    st.caption("🎙️ Allow microphone access when your browser asks. If recording fails, use the audio-file fallback below.")
+    st.caption("📱 Phone: use your Recorder app → record the target phrase → upload the clip here. The app will decode it automatically.")
 
-    audio = st.audio_input(
-        "🎙️ Record your voice",
-        sample_rate=16000,
-        key="neurospeech_voice_recorder",
-        help="Record a short 1–30 second English speech sample."
+    st.info(
+        "🎙️ For the most reliable experience on phones, record a short voice clip "
+        "with your device recorder and upload it below. Browser microphone widgets "
+        "can fail when the browser blocks microphone permissions."
     )
 
     uploaded_audio = st.file_uploader(
-        "Or upload a recording",
+        "🎙️ Upload your voice recording",
         type=["wav", "mp3", "m4a", "ogg", "webm"],
         key="neurospeech_audio_upload",
-        help="Use this if the microphone recorder shows an error."
+        help="Record the phrase with your phone/computer recorder, then upload it here."
     )
 
-    if audio is not None:
-        audio_bytes = audio.getvalue()
-        audio_source_name = "microphone.wav"
-    elif uploaded_audio is not None:
+    if uploaded_audio is not None:
         audio_bytes = uploaded_audio.getvalue()
         audio_source_name = uploaded_audio.name or "uploaded_audio"
     else:
