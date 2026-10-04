@@ -2,6 +2,7 @@
 import os
 import hashlib
 import io
+import subprocess
 from pathlib import Path
 
 WHISPER_CACHE_DIR = os.getenv("WHISPER_CACHE_DIR", "/tmp/whisper")
@@ -529,7 +530,6 @@ if audio_bytes:
         if len(audio_bytes) > 25 * 1024 * 1024:
             raise ValueError("Audio file is larger than 25 MB.")
 
-        st.audio(audio_bytes, format="audio/wav")
         with st.spinner("🔧 Preparing your recording..."):
             audio_data, sample_rate = decode_audio_bytes(audio_bytes)
 
