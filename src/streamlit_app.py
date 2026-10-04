@@ -63,16 +63,12 @@ init_db()
 
 @st.cache_resource
 def load_whisper_model():
-    try:
-        model_size = os.getenv("WHISPER_MODEL_SIZE", "base.en")
-        return whisper.load_model(
-            model_size,
-            device="cpu",
-            download_root=WHISPER_CACHE_DIR,
-        )
-    except Exception as e:
-        st.error(f"Failed to load Whisper model: {e}")
-        return None
+    model_size = os.getenv("WHISPER_MODEL_SIZE", "base.en")
+    return whisper.load_model(
+        model_size,
+        device="cpu",
+        download_root=WHISPER_CACHE_DIR,
+    )
 
 model = None
 
@@ -422,7 +418,7 @@ with col1:
         st.caption("IPA conversion unavailable")
     st.markdown("---")
     st.markdown("**Instructions:** Click the microphone button below and speak the target phrase clearly.")
-    st.caption("🎙️ If the microphone recorder fails on your browser, use the audio-file fallback below.")
+    st.caption("🎙️ Allow microphone access when your browser asks. If recording fails, use the audio-file fallback below.")
 
     audio = st.audio_input(
         "🎙️ Record your voice",
@@ -454,83 +450,154 @@ with col1:
             st.info("This recording has already been analyzed. Record or upload a new sample.")
             audio_bytes = None
 
-    if audio_bytes:
-        suffix = Path(audio_source_name).suffix.lower() or ".wav"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-            tmp_path = tmp_file.name
-            tmp_file.write(audio_bytes)
+def decode_audio_bytes(audio_bytes):
+    """Decode any supported upload to mono 16 kHz float32 audio for Whisper."""
+    if not audio_bytes:
+        raise ValueError("The recording is empty.")
+    if len(audio_bytes) > 25 * 1024 * 1024:
+        raise ValueError("Audio file is larger than 25 MB.")
+
+    import subprocess
+
+    # FFmpeg is the primary decoder because browser uploads may be WAV, WebM,
+    # MP3, M4A, or OGG. Converting here also guarantees Whisper gets 16 kHz mono.
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", "pipe:0",
+            "-f", "wav", "-ac", "1", "-ar", "16000",
+            "pipe:1",
+        ],
+        input=audio_bytes,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        # Keep a direct WAV fallback for unusual FFmpeg/container failures.
         try:
-            try:
-                audio_data, sample_rate = sf.read(tmp_path, dtype="float32")
-            except Exception:
-                import subprocess
-                proc = subprocess.run(
-                    ["ffmpeg", "-v", "error", "-i", tmp_path, "-f", "wav", "-ac", "1", "-ar", "16000", "pipe:1"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                )
-                if proc.returncode != 0 or not proc.stdout:
-                    detail = proc.stderr.decode("utf-8", errors="replace").strip()
-                    raise RuntimeError(f"Could not decode the audio file. {detail[-500:]}")
-                audio_data, sample_rate = sf.read(io.BytesIO(proc.stdout), dtype="float32")
-            if len(audio_data.shape) > 1:
-                audio_data = np.mean(audio_data, axis=1).astype(np.float32)
-            duration = len(audio_data) / sample_rate
-            if not np.isfinite(audio_data).all():
-                raise ValueError("Audio contains invalid numeric samples.")
-            if sample_rate <= 0 or audio_data.size == 0:
-                raise ValueError("Audio stream is empty or has an invalid sample rate.")
-            if duration > 30:
-                st.error("❌ Audio too long. Please record less than 30 seconds.")
-            elif duration < 0.5:
-                st.error("❌ Audio too short. Please speak the full phrase.")
+            audio_data, sample_rate = sf.read(io.BytesIO(audio_bytes), dtype="float32")
+            if audio_data.ndim > 1:
+                audio_data = np.mean(audio_data, axis=1)
+            if sample_rate != 16000:
+                raise ValueError("Audio is not 16 kHz and FFmpeg conversion failed.")
+            return np.asarray(audio_data, dtype=np.float32), int(sample_rate)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                "Could not decode the recording. "
+                f"FFmpeg: {detail[-300:] or 'unknown error'}; "
+                f"WAV fallback: {fallback_error}"
+            ) from fallback_error
+
+    try:
+        audio_data, sample_rate = sf.read(io.BytesIO(proc.stdout), dtype="float32")
+    except Exception as exc:
+        raise RuntimeError(f"Decoded audio could not be read: {exc}") from exc
+
+    if audio_data.ndim > 1:
+        audio_data = np.mean(audio_data, axis=1)
+    audio_data = np.asarray(audio_data, dtype=np.float32)
+    sample_rate = int(sample_rate)
+
+    if sample_rate != 16000:
+        raise RuntimeError(f"Audio normalization failed: expected 16000 Hz, got {sample_rate} Hz.")
+    if audio_data.size == 0:
+        raise ValueError("The recording contains no audio samples.")
+    if not np.isfinite(audio_data).all():
+        raise ValueError("The recording contains invalid audio samples.")
+    return audio_data, sample_rate
+
+
+def transcribe_audio(model, audio_data):
+    """Transcribe a normalized 16 kHz waveform with conservative Whisper settings."""
+    result = model.transcribe(
+        audio_data,
+        fp16=False,
+        language="en",
+        task="transcribe",
+        temperature=0,
+        condition_on_previous_text=False,
+        verbose=False,
+    )
+    return (result.get("text") or "").strip()
+
+
+if audio_bytes:
+    try:
+        if len(audio_bytes) > 25 * 1024 * 1024:
+            raise ValueError("Audio file is larger than 25 MB.")
+
+        st.audio(audio_bytes, format="audio/wav")
+        with st.spinner("🔧 Preparing your recording..."):
+            audio_data, sample_rate = decode_audio_bytes(audio_bytes)
+
+        duration = len(audio_data) / sample_rate
+        if duration > 30:
+            st.error("❌ Audio too long. Please record less than 30 seconds.")
+        elif duration < 0.5:
+            st.error("❌ Audio too short. Please speak the full phrase.")
+        else:
+            with st.spinner("🧠 Loading speech model and analyzing your speech..."):
+                model = load_whisper_model()
+                if model is None:
+                    raise RuntimeError("Whisper could not be loaded. Check the Space runtime logs.")
+                spoken_text = transcribe_audio(model, audio_data)
+
+            if not spoken_text:
+                st.warning("⚠️ No speech was detected. Please move closer to the microphone and speak the complete phrase.")
             else:
-                with st.spinner("🧠 Loading speech model and analyzing your speech..."):
-                    model = load_whisper_model()
-                    if model is None:
-                        raise RuntimeError("Whisper could not be loaded. Check the Space build/runtime logs.")
-                    result = model.transcribe(audio_data, fp16=False, language="en", temperature=0, condition_on_previous_text=False)
-                    spoken_text = result["text"].strip()
-                if not spoken_text:
-                    st.error("❌ No speech detected. Please try again and speak clearly.")
+                analysis = analyze_speech_advanced(
+                    st.session_state.current_target,
+                    spoken_text,
+                    duration,
+                    audio_data=audio_data,
+                    sample_rate=sample_rate,
+                )
+                accuracy = analysis["match"]
+                speech_rate = analysis["wpm"]
+                pause_count = analysis["pause_count"]
+                feedback = analysis["feedback"]
+                st.markdown("### 📝 You said:")
+                st.info(f'"{spoken_text}"')
+                col_a, col_b, col_c, col_d = st.columns(4)
+                with col_a:
+                    st.metric("Transcript Match", f"{accuracy}%")
+                with col_b:
+                    st.metric("Speech Rate", f"{speech_rate} wpm")
+                with col_c:
+                    st.metric("Duration", f"{duration:.1f}s")
+                with col_d:
+                    st.metric("Estimated Pauses", pause_count)
+                st.caption(f"Waveform silence: {analysis['silence_pct']}% · Average loudness: {analysis['loudness_db']} dBFS")
+                if accuracy >= 85:
+                    st.success("🎉 Excellent phrase match. Keep the same controlled pace.")
+                elif accuracy >= 70:
+                    st.warning("👍 Good effort. Review the word-by-word feedback.")
+                elif accuracy >= 50:
+                    st.warning("💪 Keep practicing. Slow down and focus on each target word.")
                 else:
-                    analysis = analyze_speech_advanced(st.session_state.current_target, spoken_text, duration, audio_data=audio_data, sample_rate=sample_rate)
-                    accuracy = analysis["match"]
-                    speech_rate = analysis["wpm"]
-                    pause_count = analysis["pause_count"]
-                    feedback = analysis["feedback"]
-                    st.markdown("### 📝 You said:")
-                    st.info(f'"{spoken_text}"')
-                    col_a, col_b, col_c, col_d = st.columns(4)
-                    with col_a:
-                        st.metric("Transcript Match", f"{accuracy}%")
-                    with col_b:
-                        st.metric("Speech Rate", f"{speech_rate} wpm")
-                    with col_c:
-                        st.metric("Duration", f"{duration:.1f}s")
-                    with col_d:
-                        st.metric("Estimated Pauses", pause_count)
-                    st.caption(f"Waveform silence: {analysis['silence_pct']}% · Average loudness: {analysis['loudness_db']} dBFS")
-                    if accuracy >= 85:
-                        st.success("🎉 Excellent phrase match. Keep the same controlled pace.")
-                    elif accuracy >= 70:
-                        st.warning("👍 Good effort. Review the word-by-word feedback.")
-                    elif accuracy >= 50:
-                        st.warning("💪 Keep practicing. Slow down and focus on each target word.")
-                    else:
-                        st.error("🔄 Try again and speak the complete target phrase clearly.")
-                    with st.expander("📋 Detailed Phonetic Feedback"):
-                        st.code(feedback, language="text")
-                    save_session(category, st.session_state.current_target, spoken_text, accuracy, speech_rate, pause_count, feedback, duration)
+                    st.error("🔄 Try again and speak the complete target phrase clearly.")
+                with st.expander("📋 Detailed Phonetic Feedback"):
+                    st.code(feedback, language="text")
+                if save_session(
+                    category,
+                    st.session_state.current_target,
+                    spoken_text,
+                    accuracy,
+                    speech_rate,
+                    pause_count,
+                    feedback,
+                    duration,
+                ):
                     st.session_state.last_audio_hash = audio_hash
-        except Exception as e:
-            st.error(f"❌ Error processing audio: {str(e)}")
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+                    st.success("✅ Session saved to your progress history.")
+    except subprocess.TimeoutExpired:
+        st.error("❌ Audio decoding timed out. Please record a shorter clip and try again.")
+    except Exception as e:
+        st.error(f"❌ Error processing audio: {e}")
+        st.caption("If microphone recording fails, try the upload box with a WAV/MP3/M4A/OGG/WebM file.")
 
 with col2:
     st.markdown("### 💡 Quick Tips")
