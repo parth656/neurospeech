@@ -119,7 +119,7 @@ AI-powered speech therapy application for cluttering and articulation disorders.
 1. Create account at [render.com](https://render.com)
 2. Connect GitHub repository
 3. Set build command: `pip install -r requirements.txt`
-4. Set start command: `streamlit run app.py --server.port $PORT`
+4. Set start command: `streamlit run src/streamlit_app.py --server.port $PORT`
 5. Deploy!
 
 ## 📁 Project Structure
