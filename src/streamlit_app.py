@@ -20,6 +20,9 @@ import random
 import re
 import numpy as np
 import soundfile as sf
+import queue
+import av
+from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 st.set_page_config(
     page_title="NeuroSpeech Therapy Pro",
@@ -344,6 +347,58 @@ def get_category_stats():
         st.error(f"Failed to fetch stats: {e}")
         return []
 
+
+def collect_realtime_audio():
+    """Record microphone audio through WebRTC and return it after Stop."""
+    audio_queue = queue.Queue()
+
+    def audio_frame_callback(frame: av.AudioFrame):
+        try:
+            audio_queue.put_nowait(frame.to_ndarray(format="s16").copy())
+        except Exception:
+            pass
+        return frame
+
+    st.markdown("### 🎙️ Real-Time Voice Recorder")
+    st.caption("Allow microphone access, press START, speak your target phrase, then press STOP.")
+
+    ctx = webrtc_streamer(
+        key="neurospeech-realtime-recorder",
+        mode=WebRtcMode.SENDONLY,
+        audio_frame_callback=audio_frame_callback,
+        media_stream_constraints={"audio": True, "video": False},
+        async_processing=True,
+    )
+
+    if ctx.state.playing:
+        st.info("🔴 Recording is active — speak naturally and clearly.")
+        return None
+
+    frames = []
+    while True:
+        try:
+            frames.append(audio_queue.get_nowait())
+        except queue.Empty:
+            break
+
+    if not frames:
+        return None
+
+    try:
+        audio = np.concatenate(frames, axis=1)
+    except Exception:
+        audio = np.concatenate([np.atleast_2d(x) for x in frames], axis=1)
+
+    if audio.ndim == 2:
+        audio = audio.T
+
+    # WebRTC audio is normally 48 kHz. Keep the original sample rate in a WAV
+    # container; decode_audio_bytes() will normalize it to mono 16 kHz with FFmpeg.
+    sample_rate = 48000
+    wav_buffer = io.BytesIO()
+    sf.write(wav_buffer, audio, sample_rate, format="WAV", subtype="PCM_16")
+    return wav_buffer.getvalue()
+
 def decode_audio_bytes(audio_bytes):
     """Decode any supported upload to mono 16 kHz float32 audio for Whisper."""
     if not audio_bytes:
@@ -491,23 +546,27 @@ with col1:
     except Exception:
         st.caption("IPA conversion unavailable")
     st.markdown("---")
-    st.markdown("**Instructions:** Click the microphone button below and speak the target phrase clearly.")
-    st.caption("📱 Phone: use your Recorder app → record the target phrase → upload the clip here. The app will decode it automatically.")
-
+    st.markdown("**Instructions:** Press START, speak the target phrase, then press STOP.")
     st.info(
-        "🎙️ For the most reliable experience on phones, record a short voice clip "
-        "with your device recorder and upload it below. Browser microphone widgets "
-        "can fail when the browser blocks microphone permissions."
+        "🎙️ NeuroSpeech now uses a real-time browser microphone stream. "
+        "Your browser will ask for microphone permission. The recorded audio is "
+        "processed locally by the Streamlit session after you press STOP."
     )
 
+    realtime_audio = collect_realtime_audio()
+
+    st.markdown("#### Or upload an existing recording")
     uploaded_audio = st.file_uploader(
-        "🎙️ Upload your voice recording",
+        "🎧 Upload voice recording",
         type=["wav", "mp3", "m4a", "ogg", "webm"],
         key="neurospeech_audio_upload",
-        help="Record the phrase with your phone/computer recorder, then upload it here."
+        help="Optional fallback if browser microphone access is unavailable."
     )
 
-    if uploaded_audio is not None:
+    if realtime_audio:
+        audio_bytes = realtime_audio
+        audio_source_name = "realtime_microphone.wav"
+    elif uploaded_audio is not None:
         audio_bytes = uploaded_audio.getvalue()
         audio_source_name = uploaded_audio.name or "uploaded_audio"
     else:
@@ -517,7 +576,7 @@ with col1:
     if audio_bytes:
         audio_hash = hashlib.sha256(audio_bytes).hexdigest()
         if st.session_state.get("last_audio_hash") == audio_hash:
-            st.info("This recording has already been analyzed. Record or upload a new sample.")
+            st.info("This recording has already been analyzed. Record a new sample.")
             audio_bytes = None
 
 if audio_bytes:
@@ -525,7 +584,7 @@ if audio_bytes:
         if len(audio_bytes) > 25 * 1024 * 1024:
             raise ValueError("Audio file is larger than 25 MB.")
 
-        with st.spinner("🔧 Preparing your recording..."):
+        with st.spinner("🔧 Preparing your real-time recording..."):
             audio_data, sample_rate = decode_audio_bytes(audio_bytes)
 
         duration = len(audio_data) / sample_rate
@@ -592,7 +651,7 @@ if audio_bytes:
         st.error("❌ Audio decoding timed out. Please record a shorter clip and try again.")
     except Exception as e:
         st.error(f"❌ Error processing audio: {e}")
-        st.caption("If microphone recording fails, try the upload box with a WAV/MP3/M4A/OGG/WebM file.")
+        st.caption("If microphone access fails, check the browser microphone permission or use the upload fallback.")
 
 with col2:
     st.markdown("### 💡 Quick Tips")
