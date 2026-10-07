@@ -5,214 +5,77 @@ colorFrom: blue
 colorTo: indigo
 sdk: docker
 app_port: 8501
----
+🩺 NeuroSpeech Therapy Pro
+AI-powered speech practice app for cluttering and articulation, built with OpenAI Whisper, IPA phonetics and Streamlit.
+![Python](https://img.shields.io/badge/python-3.11+-blue.svg) ![Streamlit](https://img.shields.io/badge/streamlit-1.53-red.svg) ![License](https://img.shields.io/badge/license-MIT-blue.svg)
+🚀 Live demo: huggingface.co/spaces/parthbijpuriya/neurospeech
+<!-- Add 2–3 screenshots or a GIF here, e.g. ![Demo](docs/demo.gif) -->
+🌟 Features
+12 therapy modules: Cluttering Control · Articulation (Bilabials, Alveolars, Velars, Fricatives) · Liquids (R, L) · Blends & Clusters · Pacing & Rhythm · Sentence Complexity · Prosody & Intonation · Repetition Drills · Conversational Practice
+Speech analysis
+In-browser microphone recording (or audio upload: wav, mp3, m4a, ogg, webm)
+Whisper transcription (`base.en` by default, configurable via `WHISPER_MODEL_SIZE`)
+Transcript match score (word- and character-level)
+Speech rate measured over active speech only (leading/trailing silence excluded)
+Pause detection and loudness from the waveform
+IPA conversion and word-by-word comparison
+Progress tracking
+Private per-session history (SQLite), category stats and trend charts
+Download your history as a backup and restore it later
+🛠️ Tech Stack
+Layer	Technology
+UI	Streamlit (`st.audio_input`)
+Speech-to-text	OpenAI Whisper (CPU)
+Audio	FFmpeg + soundfile + NumPy
+Phonetics	eng-to-ipa
+Storage	SQLite
+Deployment	Docker on Hugging Face Spaces
+🔧 Run Locally
+```bash
+git clone https://github.com/parth656/neurospeech.git
+cd neurospeech
 
-# 🩺 NeuroSpeech Therapy Pro
+# System dependencies
+sudo apt-get install ffmpeg libsndfile1      # Ubuntu/Debian
+brew install ffmpeg libsndfile               # macOS
+# Windows: install ffmpeg from https://ffmpeg.org/download.html and add it to PATH
 
-AI-powered speech therapy application for cluttering and articulation disorders.
-
-![Status](https://img.shields.io/badge/status-active-success.svg)
-![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-
-## 🌟 Features
-
-- **12 Comprehensive Therapy Modules**
-  - Cluttering Control
-  - Articulation (Bilabials, Alveolars, Velars, Fricatives)
-  - Liquid Sounds (R, L)
-  - Blends & Clusters
-  - Pacing & Rhythm
-  - Sentence Complexity
-  - Prosody & Intonation
-  - Repetition Drills
-  - Conversational Practice
-
-- **Advanced Speech Analysis**
-  - Real-time transcription using OpenAI Whisper
-  - Accuracy scoring (0-100%)
-  - Speech rate calculation (words per minute)
-  - IPA (International Phonetic Alphabet) conversion
-  - Word-by-word comparison
-  - Phonetic feedback
-
-- **Progress Tracking**
-  - Session history with timestamps
-  - Category-wise statistics
-  - Visual progress charts
-  - Downloadable database backup
-  - Restore previous sessions
-
-## 🚀 Demo
-
-**Live Demo:** [Try NeuroSpeech](https://huggingface.co/spaces/parthbijpuriya/neurospeech)
-
-## 📸 Screenshots
-
-*[Add screenshots here after deployment]*
-
-## 🛠️ Technologies
-
-- **Frontend:** Streamlit
-- **AI Model:** OpenAI Whisper (base.en by default; configurable)
-- **Speech Processing:** FFmpeg + soundfile
-- **Phonetics:** eng-to-ipa
-- **Database:** SQLite
-- **Language:** Python 3.11+
-
-## 📋 Prerequisites
-
-- Python 3.11 or higher
-- ffmpeg (for audio processing)
-- At least 2GB RAM (for Whisper model)
-
-## 🔧 Installation
-
-### Local Setup
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/neurospeech.git
-   cd neurospeech
-   ```
-
-2. **Install system dependencies** (Ubuntu/Debian)
-   ```bash
-   sudo apt-get update
-   sudo apt-get install ffmpeg libsndfile1
-   ```
-
-   **macOS:**
-   ```bash
-   brew install ffmpeg libsndfile
-   ```
-
-   **Windows:**
-   - Download ffmpeg from https://ffmpeg.org/download.html
-   - Add to PATH
-
-3. **Install Python dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Run the application**
-   ```bash
-   streamlit run src/streamlit_app.py
-   ```
-
-5. **Open your browser**
-   - Navigate to `http://localhost:8501`
-
-## 🌐 Deployment
-
-### Deploy to Hugging Face Spaces (Docker)
-
-1. Push the repository to GitHub
-2. Create or open the Docker Space
-3. Point the Space to this repository or sync the files
-4. Ensure the Space exposes port `8501`
-5. For persistent history, attach a Storage Bucket and set `PERSISTENT_STORAGE_PATH=/data`
-
-### Deploy to Render
-
-1. Create account at [render.com](https://render.com)
-2. Connect GitHub repository
-3. Set build command: `pip install -r requirements.txt`
-4. Set start command: `streamlit run src/streamlit_app.py --server.port $PORT`
-5. Deploy!
-
-## 📁 Project Structure
-
+pip install -r requirements.txt
+streamlit run src/streamlit_app.py
+```
+Open http://localhost:8501. The first run downloads the Whisper model. You need about 2 GB of RAM.
+⚙️ Configuration
+Variable	Default	Purpose
+`WHISPER_MODEL_SIZE`	`base.en`	Whisper model (`tiny.en`, `base.en`, `small.en`, …)
+`PERSISTENT_STORAGE_PATH`	`/tmp/neurospeech_data`	Where session databases are stored (`/data` for persistent HF storage)
+`WHISPER_CACHE_DIR`	`/tmp/whisper`	Model cache directory
+🌐 Deployment
+Hugging Face Spaces (Docker): push this repo to a Docker Space; the app listens on port 8501. For persistent storage, enable Persistent Storage and set `PERSISTENT_STORAGE_PATH=/data`.
+Streamlit Community Cloud: set the main file to `src/streamlit_app.py`. `packages.txt` installs ffmpeg and libsndfile.
+📁 Project Structure
 ```
 neurospeech/
 ├── src/
-│   └── streamlit_app.py     # Main Streamlit application
-├── Dockerfile               # Hugging Face Spaces / Docker runtime
-├── requirements.txt         # Python dependencies
-├── README.md                # Project documentation
-├── .gitignore               # Git ignore rules
+│   └── streamlit_app.py   # Streamlit application
+├── Dockerfile             # Hugging Face Spaces runtime
+├── requirements.txt       # Python dependencies
+├── packages.txt           # System packages (Streamlit Cloud)
+├── .gitignore
+└── README.md
 ```
-
-## 💡 Usage
-
-1. **Select a therapy module** from the sidebar
-2. **Read the target phrase** displayed on screen
-3. **Click the microphone** and record yourself saying the phrase
-4. **View instant feedback** including:
-   - Accuracy percentage
-   - Speech rate
-   - Phonetic comparison
-   - Word-by-word analysis
-5. **Track your progress** over time with charts and statistics
-
-## 🎯 Target Audience
-
-- Individuals with cluttering disorders
-- People with articulation difficulties
-- Speech therapy patients practicing at home
-- Speech-language pathology students
-- Anyone wanting to improve speech clarity
-
-## ⚠️ Disclaimer
-
-This application is designed as a **supplementary practice tool** and is not a replacement for professional speech therapy. Always consult with a licensed speech-language pathologist for proper diagnosis and treatment.
-
-## 🔒 Privacy
-
-- Speech recognition runs inside the Space container using Whisper
-- Uploaded audio is decoded in memory by FFmpeg and is not persisted after analysis
-- Session history uses SQLite; without a mounted volume it is ephemeral
-- For persistence, attach a Hugging Face Storage Bucket and set `PERSISTENT_STORAGE_PATH` to its mount path
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 👨‍💻 Author
-
-**Parth Bijpuriya**
-- GitHub: [@parthbijpuriya](https://github.com/parthbijpuriya)
-- Hugging Face: [@parthbijpuriya](https://huggingface.co/parthbijpuriya)
-
-## 🙏 Acknowledgments
-
-- OpenAI Whisper team for the excellent speech recognition model
-- Streamlit team for the amazing framework
-- Speech-language pathology community for inspiration
-
-## 📞 Support
-
-If you encounter any issues or have questions:
-- Open an issue on GitHub
-- Contact via [your email or social media]
-
-## 🗺️ Roadmap
-
-- [ ] Add user authentication
-- [ ] Export progress reports as PDF
-- [ ] Multi-language support
-- [ ] Mobile app version
-- [ ] Integration with therapy platforms
-- [x] Robust audio decoding and 16 kHz normalization
-- [ ] Advanced voice quality metrics
-- [ ] Custom phrase uploads
-- [ ] Therapist dashboard
-
-## ⭐ Star History
-
-If you find this project helpful, please consider giving it a star!
-
----
-
-Made with ❤️ for the speech therapy community
+🔒 Privacy
+Audio is decoded in memory and is not stored.
+Transcripts and scores are saved in a database private to your browser session; other visitors cannot see or download them.
+Without persistent storage, history is lost when the Space restarts, so use Download Progress to keep it.
+⚠️ Disclaimer
+This is a supplementary practice tool, not a medical device. Transcript matching cannot verify how individual sounds were articulated. Always consult a licensed speech-language pathologist for diagnosis and treatment.
+🗺️ Roadmap
+[ ] User authentication with persistent per-user history
+[ ] Phoneme-level scoring (forced alignment)
+[ ] PDF progress reports
+[ ] Custom phrase lists
+[ ] Therapist dashboard
+👨‍💻 Author
+Parth Bijpuriya · GitHub @parth656 · Hugging Face @parthbijpuriya
+📝 License
+MIT
