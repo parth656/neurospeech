@@ -293,7 +293,10 @@ def estimate_silence(audio, sample_rate, threshold_db=-42.0):
     runs = np.where(transitions == 1)[0]
     ends = np.where(transitions == -1)[0]
     pauses = int(sum((e - s) * frame / sample_rate >= PAUSE_MIN_SEC for s, e in zip(runs, ends)))
-    active_sec = (end - start) * frame / sample_rate
+    # Exclude internal silent frames: WPM should measure voiced time,
+    # while the pause percentage/count report those pauses separately.
+    voiced_frames = int(np.count_nonzero(~inner))
+    active_sec = voiced_frames * frame / sample_rate
     return round(ratio * 100, 1), pauses, round(active_sec, 2)
 
 
